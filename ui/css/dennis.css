@@ -73,6 +73,9 @@ body.st-thinking #brand .ring i { animation-duration: 1.2s; }
 .chip.warn { color: var(--amber); border-color: rgba(255, 179, 94, .5); }
 .chip.live { color: #022; background: var(--green); border-color: var(--green); box-shadow: 0 0 18px rgba(94, 255, 161, .45); }
 .chip.icon { font-size: 15px; padding: 4px 11px; }
+.chip.icon svg { display: block; margin: 3px 0; }
+.chip.on { color: #fff; border-color: var(--cyan); }
+.chip[hidden] { display: none; }
 .chip:hover, .chip.hand-hover { color: #fff; border-color: var(--cyan); box-shadow: 0 0 18px var(--cyan-dim); }
 
 /* ---------- tooltip ---------- */

@@ -27,7 +27,7 @@ const galaxy = new Galaxy($("#galaxy"));
 const voice = new Voice({
   onSpeaking: (on) => { if (!on) S.acking = false; if (on) setState("speaking"); else if (!S.busy && !voice.listening) setState("idle"); else if (S.busy) setState("thinking"); },
   onLevel: (v) => { galaxy.setLevel(v); document.getElementById("mic")?.style.setProperty("--lvl", v.toFixed(2)); },
-  onWord: () => galaxy.pulse(),
+  onWord: () => { galaxy.pulse(); if (S.compact) orbCh.postMessage({ pulse: 1 }); },
   onStatus: (msg, err) => { if (err) toast(msg, true); else if (/download|loading|transcrib/.test(msg)) showProgress(msg); else if (/ready/.test(msg)) hideProgress(); else if (/system voice/.test(msg)) toast(msg); },
 });
 
@@ -378,7 +378,11 @@ function onAgentEvent(ev) {
 }
 
 function handleUi(ev) {
+  // he's about to show you something: come back from compact mode first
+  if (S.compact && ["navigate", "present", "refresh", "home", "back"].includes(ev.action)) setCompact(false);
   switch (ev.action) {
+    case "compact": setCompact(true); break;
+    case "reboot": reboot(); break;
     case "navigate":
       openFolder(ev.path).then((level) => {
         if (level && ev.select) { const it = level.items.find((i) => i.path.toLowerCase() === ev.select.toLowerCase()); if (it) showPreview(it); }
@@ -665,6 +669,13 @@ $("#log-show").onclick = () => { $("#log").classList.remove("hidden"); updateIns
 const canvasEl = galaxy.renderer.domElement;
 let mouse = null;
 canvasEl.addEventListener("pointerdown", (e) => {
+  if (e.button === 1) {
+    // middle button: drag to pan, click to re-centre
+    e.preventDefault();
+    mouse = { pan: true, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, moved: false };
+    canvasEl.setPointerCapture(e.pointerId);
+    return;
+  }
   if (e.button !== 0) return;
   const t = galaxy.pick(e.clientX, e.clientY);
   mouse = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t0: performance.now(), target: t, moved: false, carry: false };
@@ -683,13 +694,16 @@ canvasEl.addEventListener("pointermove", (e) => {
     mouse.moved = true;
     if (mouse.target && mouse.target !== "core" && !mouse.target.item.isDir && !mouse.target.item.more) { mouse.carry = true; galaxy.beginCarry(mouse.target); }
   }
-  if (mouse.carry) galaxy.carryTo(e.clientX, e.clientY);
+  if (mouse.pan) { if (mouse.moved) { galaxy.panBy(dx, dy); canvasEl.style.cursor = "move"; } }
+  else if (mouse.carry) galaxy.carryTo(e.clientX, e.clientY);
   else if (mouse.moved) { galaxy.orbitBy(dx, dy); canvasEl.style.cursor = "grabbing"; }
 });
+canvasEl.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); }); // no autoscroll cursor on middle click
 canvasEl.addEventListener("pointerup", (e) => {
   if (!mouse) return;
   const m = mouse;
   mouse = null;
+  if (m.pan) { if (!m.moved) galaxy.recenter(); canvasEl.style.cursor = "grab"; return; }
   if (m.carry) {
     const over = galaxy.overCore(e.clientX, e.clientY);
     galaxy.endCarry();
@@ -858,8 +872,64 @@ function setCam(mode) {
   updateChips();
 }
 const cycleCam = () => setCam(CAM_MODES[(CAM_MODES.indexOf(S.cam) + 1) % CAM_MODES.length]);
-function toggleFullscreen() {
+async function toggleFullscreen() {
+  if (shell) { S.fullscreen = await shell.toggleFullscreen(); updateShellChips(); return; }
   if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {});
+}
+
+// ---------------------------------------------------------------- desktop shell: compact orb, fullscreen, reboot
+// window.dennisShell comes from the desktop app's preload; in a plain browser it's absent.
+const shell = window.dennisShell || null;
+const orbCh = new BroadcastChannel("dennis-orb"); // the compact orb mirrors his state and voice
+orbCh.onmessage = (e) => { if (e.data?.hello) orbCh.postMessage({ state: galaxy.state, level: galaxy.level }); };
+S.compact = false;
+S.fullscreen = false;
+function setCompact(on) {
+  if (!shell) return toast("Compact mode needs the desktop app", true);
+  shell.compact(on);
+}
+shell?.onCompact((on) => {
+  S.compact = on;
+  if (on) {
+    // nothing to point at while he's a wee orb: rest the camera and hand tracking
+    S.handsPaused = tracker.running;
+    if (S.handsPaused) { tracker.stop(); for (let i = 0; i < 2; i++) gestures.drop(i); S.handsLive = false; }
+    orbCh.postMessage({ state: galaxy.state, level: galaxy.level });
+  } else {
+    lastT = performance.now();
+    if (S.handsPaused) { S.handsPaused = false; startHands(); }
+  }
+  updateChips();
+});
+shell?.onFullscreen((on) => { S.fullscreen = on; updateShellChips(); });
+function updateShellChips() {
+  $("#chip-full").title = S.fullscreen ? "Exit fullscreen (F11)" : "Fullscreen (F11)";
+  $("#chip-full").classList.toggle("on", S.fullscreen);
+}
+$("#chip-compact").hidden = !shell;
+$("#chip-compact").onclick = () => setCompact(true);
+$("#chip-full").onclick = () => toggleFullscreen();
+// reboot: tap once to arm, again within 3 s to confirm (a stray pinch shouldn't restart him)
+let rebootArmed = 0;
+$("#chip-reboot").onclick = () => {
+  if (performance.now() - rebootArmed < 3000) return reboot();
+  rebootArmed = performance.now();
+  $("#chip-reboot").classList.add("warn");
+  toast("Tap again to reboot D.E.N.N.I.S.");
+  setTimeout(() => $("#chip-reboot").classList.remove("warn"), 3000);
+};
+const REBOOT_LINES = ["Rebooting. Back in a moment.", "Going down for a quick restart. Don't go anywhere.", "Restarting. Try not to miss me."];
+function reboot() {
+  const line = pick(REBOOT_LINES);
+  stopAll();
+  caption(line, 4000);
+  voice.say(line);
+  const t0 = performance.now();
+  const go = () => {
+    if (voice.speaking && performance.now() - t0 < 4500) return setTimeout(go, 150); // let him finish the line
+    if (shell) shell.relaunch(); else location.reload();
+  };
+  setTimeout(go, 700);
 }
 
 // ---------------------------------------------------------------- HUD: hand reticles, palm charge
@@ -1081,6 +1151,7 @@ addEventListener("keydown", (e) => {
   else if (e.key === "c") cycleCam();
   else if (e.key === "h") toggleHands();
   else if (e.key === "?") $("#legend").classList.toggle("show");
+  else if (e.key === "m") setCompact(!S.compact);
   else if (e.key === "f") { if (windowOpen()) setWindowMax(!galaxy.windowMaximized); else toggleFullscreen(); }
 });
 addEventListener("keyup", (e) => {
@@ -1093,6 +1164,7 @@ function frame(t) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.05, (t - lastT) / 1000);
   lastT = t;
+  if (S.compact) { orbCh.postMessage({ state: galaxy.state, level: galaxy.level }); return; }
   try {
     if (tracker.running) gestures.reapStale();
     galaxy.render(dt);
@@ -1205,6 +1277,7 @@ addEventListener("unhandledrejection", (e) => api.diag({ kind: "rejection", mess
 window.__dennis = {
   S, galaxy, gestures, voice, ask, navigate, home, back, present, activate, showPreview,
   summon: () => { if (!voice.listening) beginListen("summon", { auto: true }); },
+  compact: setCompact, reboot,
   talk: { pressStart, pressEnd, endListen },
   handsFree,
   probe: runProbe,

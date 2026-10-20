@@ -88,9 +88,19 @@ A pinch only counts when your fingers actually touch. The tracker ignores tiny "
 
 ### Voice and keyboard
 
-`Space` tap and talk, or hold to talk · `Esc` stops everything · `Backspace` goes back · `Home` shows the overview · `/` to type · `C` cycles the camera view (full-screen stage / small window / off) · `H` turns hands on or off · `?` shows the gesture card · `F11` goes fullscreen. **Ctrl+Shift+Space** (Cmd+Shift+Space on Mac) summons D.E.N.N.I.S. from anywhere and starts listening.
+`Space` tap and talk, or hold to talk · `Esc` stops everything · `Backspace` goes back · `Home` shows the overview · `/` to type · `C` cycles the camera view (full-screen stage / small window / off) · `H` turns hands on or off · `?` shows the gesture card · `F11` goes fullscreen · `M` switches to compact mode. **Ctrl+Shift+Space** (Cmd+Shift+Space on Mac) summons D.E.N.N.I.S. from anywhere and starts listening.
 
-The mouse works everywhere: click, drag to spin, scroll to zoom, double-click a file to open it, and drag a file onto the core to ask about it.
+The mouse works everywhere: click, drag to spin, scroll to zoom, middle-drag to pan (a middle click re-centres the view), double-click a file to open it, and drag a file onto the core to ask about it.
+
+### Compact mode, fullscreen and reboot
+
+The three icons beside `?` in the header do the following:
+
+- **Compact mode** hides the main window and leaves just the particle core floating on your desktop, always on top. Drag it anywhere (it remembers the spot), click it to bring the full interface back, or right-click it for Open, Listen, Reboot and Quit. He keeps listening and talking in compact mode, and comes back by himself when he needs to show you something. Hand tracking pauses while he's compact.
+- **Fullscreen** toggles fullscreen, the same as `F11`.
+- **Reboot** relaunches D.E.N.N.I.S. and replays the boot sequence. Tap it twice within 3 seconds, so a stray click or pinch can't restart him.
+
+You can also just ask: "go compact", "fullscreen", or "reboot yourself".
 
 ### Things to try
 

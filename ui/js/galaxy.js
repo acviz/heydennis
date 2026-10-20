@@ -13,7 +13,7 @@
 // still land on a small star.
 import * as THREE from "/vendor/three/three.webgpu.js";
 import {
-  uniform, sin, cos, vec2, vec3, float, mix, smoothstep, fract, abs, pow, dot, length, uv, screenUV, screenSize,
+  uniform, sin, cos, vec2, vec3, vec4, float, mix, smoothstep, fract, abs, pow, dot, length, uv, screenUV, screenSize,
   texture, normalView, positionViewDirection, instancedBufferAttribute, pass, max, min, select, positionLocal,
 } from "/vendor/three/three.tsl.js";
 import { bloom } from "/vendor/three/addons/tsl/display/BloomNode.js";
@@ -853,6 +853,23 @@ export class Galaxy {
     this.lastInput = performance.now();
   }
 
+  /** Slide the view across the screen (middle-drag): the scene follows the pointer. */
+  panBy(dx, dy) {
+    const cam = this.camera, o = this.orbit;
+    const perPx = (2 * o.radius * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)) / this.h; // world units per pixel at the target
+    const move = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0).multiplyScalar(-dx * perPx)
+      .addScaledVector(new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1), dy * perPx);
+    for (const v of [o.target, o.goalTarget]) { v.add(move); if (v.length() > 2500) v.setLength(2500); } // never lose the scene
+    this.lastInput = performance.now();
+  }
+
+  /** Back to the usual framing (middle click), or onto the selected window. */
+  recenter() {
+    if (this.selected) this.orbit.goalTarget.copy(this.selected.home).multiplyScalar(0.35);
+    else this.orbit.goalTarget.set(0, -20, 0);
+    this.lastInput = performance.now();
+  }
+
   beginCarry(n) { this.carried = n; this.lastInput = performance.now(); }
   carryTo(x, y) {
     const n = this.carried;
@@ -1128,6 +1145,84 @@ export class Galaxy {
       if (obj.material) obj.material.dispose();
       if (obj.element) obj.element.remove();
     });
+  }
+}
+
+/**
+ * Compact mode: only the particle core, on a small transparent window floating over the
+ * desktop. It mirrors the main window's state and voice level, which arrive over a
+ * BroadcastChannel (see orb.js); the main window stops drawing its galaxy meanwhile.
+ */
+export class Orb {
+  constructor(el) {
+    this.renderer = new THREE.WebGPURenderer({ antialias: true, alpha: true });
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+    el.appendChild(this.renderer.domElement);
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(40, 1, 1, 3000);
+    this.camera.position.set(0, 60, 318); // the sphere fills the window; the outer disc just fits
+    this.camera.lookAt(0, 0, 0);
+    this.tex = { soft: radialTexture([[0, "rgba(255,255,255,.5)"], [0.4, "rgba(255,255,255,.12)"], [1, "rgba(255,255,255,0)"]]) };
+    this.u = {
+      level: uniform(0), pull: uniform(0), t: uniform(0), assemble: uniform(0),
+      deep: uniform(new THREE.Color(STATE_COLORS.idle[0])), hot: uniform(new THREE.Color(STATE_COLORS.idle[1])),
+    };
+    this.sphere = Galaxy.prototype.buildSphere.call(this, CORE_R);
+    this.scene.add(this.sphere.group);
+    this.state = "idle";
+    this.level = 0;
+    this.smooth = 0;
+    this.pulseV = 0;
+    this.t = 0;
+    this.born = performance.now();
+    this.resize();
+    addEventListener("resize", () => this.resize());
+    this.ready = this.renderer.init().then(() => {
+      const scenePass = pass(this.scene, this.camera);
+      const color = scenePass.getTextureNode("output");
+      this.bloom = bloom(color, 0.7, 0.45, 0.3);
+      const Pipeline = THREE.RenderPipeline || THREE.PostProcessing;
+      this.post = new Pipeline(this.renderer);
+      // the glow is light added over the desktop, so it keeps the scene's own (near zero) alpha
+      this.post.outputNode = vec4(color.rgb.add(this.bloom.rgb), color.a);
+      this.initialized = true;
+    }).catch((e) => { console.error("[orb] renderer failed", e); this.failed = e; });
+  }
+
+  resize() {
+    this.renderer.setSize(innerWidth, innerHeight);
+    this.camera.aspect = innerWidth / innerHeight;
+    this.camera.updateProjectionMatrix();
+  }
+
+  setState(s) { this.state = s; }
+  setLevel(v) { this.level = Math.max(0, Math.min(1, v)); }
+  pulse() { this.pulseV = 1; }
+
+  render(dt) {
+    if (!this.initialized) return;
+    this.t += dt;
+    const u = this.u, s = this.sphere;
+    const k6 = 1 - Math.exp(-dt * 6);
+    const voiced = this.state === "listening" || this.state === "speaking";
+    this.smooth += ((voiced ? this.level : 0) - this.smooth) * (1 - Math.exp(-dt * 14));
+    this.pulseV *= Math.pow(0.02, dt);
+    u.level.value = Math.min(1, this.smooth + this.pulseV * 0.25);
+    u.pull.value += ((this.state === "listening" ? 1 : 0) - u.pull.value) * (1 - Math.exp(-dt * 4));
+    u.assemble.value = easeOut(Math.min(1, (performance.now() - this.born) / 1100)); // particles fly in when it appears
+    const [deep, hot] = STATE_COLORS[this.state] || STATE_COLORS.idle;
+    u.deep.value.lerp(new THREE.Color(deep), k6);
+    u.hot.value.lerp(new THREE.Color(hot), k6);
+    const speed = this.state === "thinking" ? 3.4 : this.state === "listening" ? 0.6 : this.state === "speaking" ? 1.6 : 1;
+    u.t.value += dt * speed;
+    s.group.rotation.y += dt * 0.08 * speed;
+    s.net.rotation.y -= dt * 0.12 * speed;
+    s.net.rotation.x += dt * 0.05;
+    s.glow.material.opacity = 0.2 + u.level.value * 0.3;
+    s.group.position.y = Math.sin(this.t * (this.state === "thinking" ? 4 : 1.1)) * 1.5 + u.level.value * 4;
+    this.bloom.strength.value = 0.7 + u.level.value * 0.6;
+    this.post.render();
   }
 }
 

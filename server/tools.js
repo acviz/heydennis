@@ -301,8 +301,8 @@ export function buildTools({ webSearch }) {
     },
     {
       name: "control_interface",
-      description: "Drive the on-screen interface: go home (all folders), go back up a level, close the preview, start a fresh conversation view, or toggle the camera.",
-      input_schema: obj({ action: { type: "string", enum: ["home", "back", "close_preview", "toggle_camera", "toggle_hands", "fullscreen"] } }, ["action"]),
+      description: "Drive the on-screen interface: go home (all folders), go back up a level, close the preview, toggle the camera or hand tracking, toggle fullscreen, shrink to compact mode (just your core, floating on their desktop; you keep listening and talking), or reboot (relaunch yourself - only when they ask for it).",
+      input_schema: obj({ action: { type: "string", enum: ["home", "back", "close_preview", "toggle_camera", "toggle_hands", "fullscreen", "compact", "reboot"] } }, ["action"]),
       async run({ action }, ctx) {
         ctx.ui({ action });
         return `Interface: ${action} done.`;
