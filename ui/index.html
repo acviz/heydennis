@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>D.E.N.N.I.S.</title>
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/dennis.css">
+</head>
+<body class="cam-stage">
+  <!-- the webcam: full-screen stage behind the galaxy, or a small sensor window -->
+  <video id="cam" autoplay playsinline muted></video>
+  <div id="vignette"></div>
+  <div id="galaxy"></div>
+  <canvas id="hud"></canvas>
+
+  <!-- top bar -->
+  <header id="top">
+    <div id="brand" data-hand title="New conversation">
+      <div class="ring"><i></i><i></i></div>
+      <div class="words"><b>D.E.N.N.I.S.</b><span id="state-label">BOOTING</span></div>
+    </div>
+    <div id="center">
+      <div id="clock"><b id="clock-time">--:--</b><span id="clock-date"></span></div>
+      <nav id="crumbs"></nav>
+    </div>
+    <div id="chips">
+      <button class="chip" id="chip-index" title="File index - click to rescan">INDEX ...</button>
+      <button class="chip" id="chip-hands" title="Hand tracking (H)">HANDS</button>
+      <button class="chip" id="chip-cam" title="Camera view (C)">CAM</button>
+      <button class="chip" id="chip-wake" title="Hands-free: say &quot;Hey Dennis&quot; to start, &quot;that's all&quot; to finish">HEY DENNIS</button>
+      <button class="chip" id="chip-voice" title="Speak replies">VOICE</button>
+      <button class="chip" id="chip-help" title="Gestures (?)">?</button>
+      <button class="chip icon" id="chip-settings" title="Settings">&#9881;</button>
+    </div>
+  </header>
+
+  <!-- HUD instruments -->
+  <section id="w-activity" class="widget"><h5>ACTIVITY <small>30D</small><em>UPD</em></h5><div class="big">--</div><div class="sub">files changed this week</div><canvas></canvas></section>
+  <section id="w-wave" class="widget"><h5>AUDIO <small>IDLE</small></h5><canvas></canvas></section>
+  <section id="w-readout" class="widget"><div class="ringlabel"><b id="ro-time">--</b>LOCAL <i>TIME</i></div><div class="ringlabel"><b id="ro-files">--</b>FILES <i>INDEXED</i></div></section>
+  <div id="scan"></div>
+
+  <!-- hover tooltip -->
+  <div id="tip" class="glass"></div>
+
+  <!-- file preview, left -->
+  <aside id="preview">
+    <div class="phead">
+      <span class="kdot"></span>
+      <div class="ptitle"><b></b><small></small></div>
+      <button class="x" data-act="max" title="Full screen (F)"><svg class="i-max" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 2H2v4M10 2h4v4M6 14H2v-4M10 14h4v-4"/></svg><svg class="i-min" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 6h4V2M14 6h-4V2M2 10h4v4M14 10h-4v4"/></svg></button>
+      <button class="x" data-act="close" title="Close (Esc)">&times;</button>
+    </div>
+    <div class="pbody"></div>
+    <div class="pactions">
+      <button data-act="ask">ASK D.E.N.N.I.S.</button>
+      <button data-act="open">OPEN</button>
+      <button data-act="reveal">SHOW IN FOLDER</button>
+    </div>
+  </aside>
+
+  <!-- conversation log, right -->
+  <aside id="log" class="glass panel">
+    <div class="lhead"><b>COMMS</b><button id="log-new" title="Start a new conversation">NEW</button><button id="log-hide" title="Hide">&ndash;</button></div>
+    <div id="msgs"></div>
+  </aside>
+  <button id="log-show" class="chip">COMMS</button>
+
+  <!-- what D.E.N.N.I.S. is saying right now -->
+  <div id="caption"></div>
+  <div id="progress"></div>
+
+  <!-- input -->
+  <form id="ask" autocomplete="off">
+    <button type="button" id="mic" title="Tap and talk, or hold to talk (SPACE works the same)"><svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.93V22h2v-3.07A7 7 0 0 0 19 12z"/></svg></button>
+    <input id="q" placeholder="Ask D.E.N.N.I.S. - or tap SPACE and just talk" spellcheck="false">
+    <button type="submit" id="send">SEND</button>
+    <button type="button" id="stop" title="Stop (Esc)">STOP</button>
+  </form>
+
+  <!-- gesture legend -->
+  <div id="legend" class="glass">
+    <h4>HANDS</h4>
+    <div><b>Point</b> aim with your index finger</div>
+    <div><b>Pinch-tap</b> open a folder / preview a file / press a button</div>
+    <div><b>Pinch-drag</b> spin the galaxy &middot; drag a file onto the core to ask about it</div>
+    <div><b>Two-hand pinch</b> pull apart / together to zoom</div>
+    <div><b>Peace &#9996;</b> hold to go back a level</div>
+    <div><b>Open palm</b> hold still to talk &middot; lower it to send</div>
+    <div><b>Fist</b> hold to hush: stop speaking, close the preview</div>
+    <h4>VOICE</h4>
+    <div><b>"Hey Dennis"</b> (or "Dennis?", "Sup Dennis?") wakes him - then just talk, no wake word needed</div>
+    <div><b>"That's all"</b> / "goodbye" / "stop listening" ends the conversation</div>
+    <div><b>"Stop"</b> / "shut up" / "put a sock in it" silences him &middot; <b>"Say that again?"</b> / "can you repeat?" repeats his last reply</div>
+    <h4>KEYS</h4>
+    <div><b>Space</b> tap and talk (sends when you stop) or hold to talk &middot; <b>Esc</b> stop &middot; <b>Backspace</b> back &middot; <b>Home</b> overview</div>
+    <div><b>F</b> expand an open file window to full screen &middot; <b>C</b> camera view &middot; <b>H</b> hands on/off &middot; <b>/</b> type &middot; <b>?</b> this card</div>
+  </div>
+
+  <!-- approval -->
+  <div id="approve" class="modal">
+    <div class="glass box">
+      <h3></h3>
+      <pre></pre>
+      <div class="row">
+        <button class="yes" data-hand>ALLOW</button>
+        <button class="no" data-hand>DENY</button>
+      </div>
+      <small>Say "yes" or "no", pinch a button, or click.</small>
+    </div>
+  </div>
+
+  <!-- settings / first run -->
+  <div id="settings" class="modal">
+    <form class="glass box wide" id="settings-form" autocomplete="off">
+      <h2 id="settings-title">SETTINGS</h2>
+      <p id="settings-intro"></p>
+      <div class="grid">
+        <label>Your name<input name="userName" placeholder="e.g. Alex"></label>
+        <label>Address you as<input name="address" placeholder="optional, e.g. boss"></label>
+        <label class="span2">Personality tweaks
+          <textarea name="personality" rows="2" maxlength="2000" placeholder="optional - e.g. more sarcasm, fewer Scottish words, call me Captain"></textarea>
+          <small>Out of the box: Jarvis meets Sean Connery - dry wit, a little sarcasm, very sophisticated. Notes here take priority.</small></label>
+        <label class="span2">Claude API key <span id="key-state"></span>
+          <input name="apiKey" type="password" placeholder="sk-ant-...  (leave blank to keep the current key)">
+          <small>Get one at console.anthropic.com. Stored on this computer only<span id="key-storage"></span>.</small></label>
+        <label>Model<input name="model" placeholder="claude-opus-5-5"></label>
+        <label>Thinking effort
+          <select name="effort"><option value="low">low - quickest replies</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">extra high</option><option value="max">max - slowest, most thorough</option></select></label>
+        <label>Changes &amp; launches
+          <select name="permissionMode"><option value="ask">ask me first (recommended)</option><option value="auto">just do it</option></select></label>
+        <label class="check"><input type="checkbox" name="webSearch"> Allow web search</label>
+        <div class="span2">
+          <div class="lbl">Folders D.E.N.N.I.S. can see</div>
+          <div id="roots"></div>
+          <div class="addroot"><input id="root-path" placeholder="Add a folder: full path, e.g. E:\Projects"><button type="button" id="root-browse">BROWSE</button><button type="button" id="root-add">ADD</button></div>
+        </div>
+        <label class="check"><input type="checkbox" name="speak"> Speak replies aloud</label>
+        <label>Voice engine
+          <select name="engine"><option value="kokoro">Natural British - on this PC (free)</option><option value="elevenlabs">ElevenLabs - most human (needs a key)</option><option value="system">System voice (robotic)</option></select></label>
+        <label>Natural voice<select name="kokoroVoice"><option value="bm_daniel">Daniel</option><option value="bm_george">George</option><option value="bm_fable">Fable</option><option value="bm_lewis">Lewis</option></select></label>
+        <label>ElevenLabs key <span id="eleven-state"></span><input name="elevenKey" type="password" placeholder="optional - leave blank to keep the current key"></label>
+        <label>ElevenLabs voice ID<input name="elevenVoice" placeholder="onwK4e9ZLuTAKqWW03F9 (Daniel)"></label>
+        <label>System voice<select name="voiceName"><option value="">automatic</option></select></label>
+        <label>Speech recognition
+          <select name="sttModel"><option value="Xenova/whisper-tiny.en">Whisper tiny (fastest, ~40 MB)</option><option value="Xenova/whisper-base.en">Whisper base (balanced, ~80 MB)</option><option value="Xenova/whisper-small.en">Whisper small (most accurate, ~250 MB)</option></select></label>
+        <label>Microphone<select name="micId"><option value="">system default</option></select></label>
+        <label class="check"><input type="checkbox" name="handsEnabled"> Hand tracking (webcam)</label>
+        <label>Camera<select name="cameraId"><option value="">automatic (prefers Camo / iPad)</option></select></label>
+        <label class="check"><input type="checkbox" name="mirrorCam"> Mirror camera (turn off if your hand moves the cursor the wrong way)</label>
+        <label class="check"><input type="checkbox" name="palmToTalk"> Open palm = talk</label>
+        <label class="check"><input type="checkbox" name="wakeWord"> Hands-free: "Hey Dennis" wakes him, "that's all" ends</label>
+        <label class="check"><input type="checkbox" name="showHidden"> Show hidden files</label>
+      </div>
+      <div class="row end">
+        <button type="button" id="open-memory">MEMORY FILE</button>
+        <button type="button" id="settings-cancel">CANCEL</button>
+        <button type="submit" class="yes">SAVE</button>
+      </div>
+      <small class="fine">Everything stays on this computer except what you ask D.E.N.N.I.S. about, which is sent to Claude. Camera frames and voice never leave the machine. Data folder: <span id="data-dir"></span></small>
+    </form>
+  </div>
+
+  <div id="boot"><div class="b-title"></div><div class="b-sub">DIGITAL ENTITY NEURAL NETWORK INTELLIGENT SYSTEM</div><div class="b-tag">YOUR VIRTUAL PRODUCTION ASSISTANT</div><div class="b-log"></div><div class="b-bar"><div class="b-track"><div class="b-fill"></div></div><span class="b-pct">0%</span><span class="b-what">INITIALIZING</span></div></div>
+  <div id="toast"></div>
+  <div id="locked" class="modal"><div class="glass box"><h3>D.E.N.N.I.S. IS LOCKED</h3><p>Open it from the app, or use the private link printed in the terminal when the server started.</p></div></div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

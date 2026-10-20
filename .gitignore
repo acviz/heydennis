@@ -1,0 +1,7 @@
+node_modules/
+dist/
+ui/vendor/
+build/icon.png
+.DS_Store
+*.log
+voice-samples/

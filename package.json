@@ -1,0 +1,96 @@
+{
+  "name": "dennis",
+  "productName": "DENNIS",
+  "version": "0.1.0",
+  "description": "D.E.N.N.I.S. - your virtual production assistant: a local, Claude-powered desktop assistant with a hand-gesture file galaxy.",
+  "license": "MIT",
+  "type": "module",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "postinstall": "node scripts/vendor.mjs && node scripts/make-icon.mjs",
+    "start": "electron .",
+    "serve": "node server/cli.mjs",
+    "mock": "node server/cli.mjs --mock",
+    "icon": "node scripts/make-icon.mjs",
+    "dist": "node scripts/make-icon.mjs && electron-builder",
+    "dist:win": "node scripts/make-icon.mjs && electron-builder --win",
+    "dist:mac": "node scripts/make-icon.mjs && electron-builder --mac",
+    "dist:linux": "node scripts/make-icon.mjs && electron-builder --linux",
+    "check": "node scripts/selftest.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0"
+  },
+  "devDependencies": {
+    "@huggingface/transformers": "^4.3.1",
+    "@mediapipe/tasks-vision": "^1.1.1",
+    "electron": "^44.9.1",
+    "electron-builder": "^26.15.3",
+    "kokoro-js": "^1.2.1",
+    "three": "^0.186.1"
+  },
+  "build": {
+    "appId": "com.dennis.assistant",
+    "productName": "DENNIS",
+    "copyright": "D.E.N.N.I.S.",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "server/**",
+      "ui/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "ui/vendor/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "D.E.N.N.I.S."
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSCameraUsageDescription": "D.E.N.N.I.S. uses your camera for hand-gesture control. Video never leaves your computer.",
+        "NSMicrophoneUsageDescription": "D.E.N.N.I.S. uses your microphone when you talk to it. Speech is transcribed on your computer."
+      }
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "build/icon.png",
+      "category": "Utility"
+    }
+  },
+  "author": {
+    "name": "D.E.N.N.I.S."
+  }
+}

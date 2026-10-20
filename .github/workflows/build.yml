@@ -1,0 +1,42 @@
+# Builds the D.E.N.N.I.S. installers for Windows, macOS and Linux.
+# Push a tag like v0.1.0, or run it by hand from the Actions tab.
+# The installers are attached to the run as downloadable artifacts.
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            script: dist:win
+            files: dist/*.exe
+          - os: macos-latest
+            script: dist:mac
+            files: dist/*.dmg
+          - os: ubuntu-latest
+            script: dist:linux
+            files: dist/*.AppImage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run ${{ matrix.script }} -- --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dennis-${{ matrix.os }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error

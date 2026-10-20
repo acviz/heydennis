@@ -1,0 +1,163 @@
+// Settings and persistent state live in ~/.dennis (override with DENNIS_HOME).
+// Nothing here is inside the app bundle, so reinstalling or updating the app
+// never touches who D.E.N.N.I.S. thinks you are or what it remembers.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
+
+export const DATA_DIR = process.env.DENNIS_HOME || path.join(os.homedir(), ".dennis");
+const CONFIG_PATH = path.join(DATA_DIR, "config.json");
+
+export const DEFAULT_MODEL = "claude-opus-5-5";
+
+const DEFAULTS = {
+  userName: "",
+  address: "", // how D.E.N.N.I.S. addresses you ("sir", "boss", ...); empty = by name
+  personality: "", // your own notes on his personality, added to the system prompt
+  model: DEFAULT_MODEL,
+  effort: "low", // low keeps spoken replies quick; raise for heavier file work
+  webSearch: true,
+  permissionMode: "ask", // "ask": confirm every change/launch; "auto": just do it
+  roots: null, // [{ path, label }]; null = detect on first run
+  showHidden: false,
+  voice: { speak: true, voiceName: "", rate: 0.96, pitch: 0.85, stt: "whisper", sttModel: "Xenova/whisper-base.en", micId: "", wakeWord: true,
+    engine: "kokoro", kokoroVoice: "bm_daniel", elevenVoice: "onwK4e9ZLuTAKqWW03F9", elevenModel: "eleven_flash_v2_5" },
+  hands: { enabled: true, palmToTalk: true, showCamera: true, cameraId: "", mirror: true, camView: "stage" }, // camView: stage | pip | off
+  visuals: { bloom: true, autoRotate: true },
+  port: 47800,
+};
+
+function deepMerge(base, over) {
+  if (!over || typeof over !== "object" || Array.isArray(over)) return over ?? base;
+  const out = { ...base };
+  for (const [k, v] of Object.entries(over)) {
+    out[k] = base && typeof base[k] === "object" && !Array.isArray(base[k]) && base[k] !== null ? deepMerge(base[k], v) : v;
+  }
+  return out;
+}
+
+/** Folders that exist on this machine and make sense as starting roots. */
+export function detectRoots(known = {}) {
+  const home = os.homedir();
+  const candidates = [
+    ["Desktop", known.desktop], ["Documents", known.documents], ["Downloads", known.downloads],
+    ["Pictures", known.pictures], ["Music", known.music], ["Videos", known.videos],
+  ];
+  const seen = new Set();
+  const out = [];
+  const add = (label, p) => {
+    if (!p) return;
+    const key = path.resolve(p).toLowerCase();
+    if (seen.has(key)) return;
+    try { if (!fs.statSync(p).isDirectory()) return; } catch { return; }
+    seen.add(key);
+    out.push({ path: path.resolve(p), label });
+  };
+  for (const [label, p] of candidates) add(label, p);
+  // Fall back to the conventional names (and macOS "Movies", OneDrive redirection).
+  for (const [label, names] of [
+    ["Desktop", ["Desktop", "OneDrive/Desktop"]],
+    ["Documents", ["Documents", "OneDrive/Documents"]],
+    ["Downloads", ["Downloads"]],
+    ["Pictures", ["Pictures", "OneDrive/Pictures"]],
+    ["Music", ["Music"]],
+    ["Videos", ["Videos", "Movies"]],
+  ]) {
+    if (out.some((r) => r.label === label)) continue;
+    for (const n of names) {
+      const p = path.join(home, n);
+      if (fs.existsSync(p)) { add(label, p); break; }
+    }
+  }
+  return out;
+}
+
+export class Config {
+  constructor({ secrets = null, knownFolders = {} } = {}) {
+    this.secrets = secrets; // { canEncrypt(), encrypt(str) -> b64, decrypt(b64) -> str } (Electron safeStorage)
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    let raw = {};
+    try { raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); } catch { /* first run */ }
+    this.data = deepMerge(DEFAULTS, raw);
+    let dirty = false;
+    if (!this.data.token) { this.data.token = crypto.randomBytes(24).toString("hex"); dirty = true; }
+    if (!Array.isArray(this.data.roots) || !this.data.roots.length) {
+      this.data.roots = detectRoots(knownFolders);
+      dirty = true;
+    }
+    if (dirty) this.save();
+  }
+
+  get(key) { return this.data[key]; }
+
+  save() {
+    const tmp = CONFIG_PATH + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, CONFIG_PATH);
+  }
+
+  /** Apply a partial update from the settings screen. Only known keys are accepted. */
+  update(patch = {}) {
+    const allowed = ["userName", "address", "personality", "model", "effort", "webSearch", "permissionMode", "roots", "showHidden", "voice", "hands", "visuals"];
+    for (const k of allowed) {
+      if (!(k in patch)) continue;
+      if (k === "roots") {
+        const roots = (Array.isArray(patch.roots) ? patch.roots : [])
+          .filter((r) => r && typeof r.path === "string" && r.path.trim())
+          .map((r) => ({ path: path.resolve(r.path.trim()), label: String(r.label || path.basename(r.path.trim()) || r.path).slice(0, 40) }));
+        this.data.roots = roots;
+      } else if (k === "effort") {
+        if (["low", "medium", "high", "xhigh", "max"].includes(patch.effort)) this.data.effort = patch.effort;
+      } else if (k === "permissionMode") {
+        if (["ask", "auto"].includes(patch.permissionMode)) this.data.permissionMode = patch.permissionMode;
+      } else if (typeof DEFAULTS[k] === "object" && DEFAULTS[k] !== null) {
+        this.data[k] = deepMerge(this.data[k], patch[k]);
+      } else {
+        this.data[k] = patch[k];
+      }
+    }
+    if ("apiKey" in patch) this.setApiKey(patch.apiKey);
+    if ("elevenKey" in patch) this.setSecret("elevenKey", patch.elevenKey);
+    this.save();
+  }
+
+  setApiKey(key) { this.setSecret("apiKey", key); }
+
+  /** Secrets are encrypted with the OS keychain in the desktop app (plain text only as a fallback). */
+  setSecret(name, value) {
+    value = String(value || "").trim();
+    if (!value) { delete this.data[name]; return; }
+    if (this.secrets?.canEncrypt()) this.data[name] = { scheme: "os", value: this.secrets.encrypt(value) };
+    else this.data[name] = { scheme: "plain", value };
+  }
+
+  getSecret(name) {
+    const k = this.data[name];
+    if (k?.scheme === "os" && this.secrets) {
+      try { return this.secrets.decrypt(k.value); } catch { return undefined; }
+    }
+    if (k?.scheme === "plain") return k.value;
+    return undefined;
+  }
+
+  /** The key the Anthropic client should use, or undefined to let the SDK resolve env / `ant auth` credentials. */
+  apiKey() {
+    const k = this.data.apiKey;
+    if (k?.scheme === "os" && this.secrets) {
+      try { return this.secrets.decrypt(k.value); } catch { return undefined; }
+    }
+    if (k?.scheme === "plain") return k.value;
+    return undefined;
+  }
+
+  hasCredentials() {
+    return !!(this.apiKey() || process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+  }
+
+  /** What the UI is allowed to see: everything except secrets. */
+  publicView() {
+    const { token, apiKey, elevenKey, ...rest } = this.data;
+    return { ...rest, hasApiKey: this.hasCredentials(), hasElevenKey: !!this.getSecret("elevenKey"), keyStorage: apiKey?.scheme || (process.env.ANTHROPIC_API_KEY ? "env" : null), dataDir: DATA_DIR };
+  }
+}
