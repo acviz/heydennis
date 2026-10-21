@@ -8,7 +8,9 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dennis-selftest-"));
+// the real, long path: on Windows os.tmpdir() can be an 8.3 short name (C:\Users\ANTHON~1\...),
+// while the tools report the long one, so paths would never compare equal
+const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "dennis-selftest-")));
 const home = path.join(tmp, "home");
 const files = path.join(tmp, "files");
 fs.mkdirSync(path.join(files, "Projects"), { recursive: true });
