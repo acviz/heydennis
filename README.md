@@ -111,6 +111,19 @@ Opening a file puts it in a floating hologram window that grows out of its card.
 - **Full screen:** `F` or the expand button. `Esc` brings it back, then closes the front window.
 - **Keep:** windows stay open when you change folders.
 
+**Documents open in the window itself**, readable without leaving D.E.N.N.I.S.:
+
+| File | What you see |
+|---|---|
+| PDF | The real pages, with a page counter and zoom (`−` / `FIT` / `+`) |
+| Word (`.docx`) | The formatted document: headings, lists, tables, pictures, links |
+| Excel (`.xlsx`), `.csv`, `.tsv` | A grid with column letters and row numbers, merged cells, number and date formats, and a tab for each sheet |
+| PowerPoint (`.pptx`) | Each slide laid out with its text, pictures, shapes and tables |
+| Markdown (`.md`) | Formatted text |
+| Images, video, audio, code and text | As before |
+
+Pinch-drag scrolls any document, in any direction, and the toolbar buttons respond to a pinch-tap. Older `.doc`, `.xls` and `.ppt` files have no preview; **OPEN** hands them to your usual app. Everything is drawn on your computer, and nothing in a document can run code.
+
 ### Languages
 
 Settings → **Languages you speak** sets this. Choose *Auto* for English, Arabic, Tagalog, French, Japanese and Chinese, or pick one language.

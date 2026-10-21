@@ -7,6 +7,9 @@
 //   hand_landmarker.task model    -> ui/vendor/mediapipe/ (downloaded once, ~7.5 MB)
 //   transformers.js + ORT wasm    -> ui/vendor/transformers/ (local Whisper speech-to-text)
 //   Mermaid (ESM build + chunks)  -> ui/vendor/mermaid/ (the diagrams he draws)
+//   PDF.js + fonts/cmaps/wasm     -> ui/vendor/pdfjs/ (the document reader's PDF pages)
+//   mammoth (browser build)       -> ui/vendor/mammoth/ (Word documents as formatted pages)
+//   marked (ESM)                  -> ui/vendor/marked/ (Markdown as formatted text)
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -119,6 +122,20 @@ copy("mermaid/dist/mermaid.esm.min.mjs", "mermaid/mermaid.esm.min.mjs");
   else fs.cpSync(from, path.join(OUT, "mermaid", "chunks", "mermaid.esm.min"), { recursive: true, filter: (src) => !src.endsWith(".map") });
   copyLicense("mermaid", "mermaid");
 }
+
+// The document reader (ui/js/reader.js): PDF.js renders PDF pages (its fonts, character maps,
+// colour profiles and image decoders come along so scanned and CJK PDFs work offline),
+// mammoth turns Word files into formatted HTML, marked renders Markdown.
+// the "legacy" build carries polyfills for the newest JS it uses (Map.getOrInsertComputed and co.),
+// so it runs on Electron's Chromium and on browsers a few versions back alike
+copy("pdfjs-dist/legacy/build/pdf.min.mjs", "pdfjs/pdf.min.mjs");
+copy("pdfjs-dist/legacy/build/pdf.worker.min.mjs", "pdfjs/pdf.worker.min.mjs");
+for (const dir of ["cmaps", "standard_fonts", "wasm", "iccs"]) copy(`pdfjs-dist/${dir}`, `pdfjs/${dir}`);
+copyLicense("pdfjs-dist", "pdfjs");
+copy("mammoth/mammoth.browser.min.js", "mammoth/mammoth.browser.min.js");
+copyLicense("mammoth", "mammoth");
+copy("marked/lib/marked.esm.js", "marked/marked.esm.js");
+copyLicense("marked", "marked");
 
 // The hand model is not on npm; fetch it once and keep it.
 const modelPath = path.join(OUT, "mediapipe", "hand_landmarker.task");

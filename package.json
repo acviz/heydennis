@@ -28,7 +28,10 @@
     "electron": "^44.9.1",
     "electron-builder": "^26.15.3",
     "kokoro-js": "^1.2.1",
+    "mammoth": "1.13.0",
+    "marked": "18.1.0",
     "mermaid": "^12.1.0",
+    "pdfjs-dist": "6.4.299",
     "three": "^0.186.1"
   },
   "build": {

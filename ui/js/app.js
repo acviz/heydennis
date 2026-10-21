@@ -3,6 +3,7 @@
 import { api, LockedError } from "./api.js";
 import { Galaxy, KIND_COLORS, KIND_NAMES, MAX_NODES, fmtBytes, escapeHtml } from "./galaxy.js";
 import { Gestures, HandTracker, synthHand, handMetrics, dedupe, cameraRank } from "./hands.js";
+import { openReader, READABLE } from "./reader.js";
 import { Voice } from "./voice.js";
 import { HandsFree, isStopPhrase, isRepeatPhrase } from "./handsfree.js";
 import { Caps } from "./caps.js";
@@ -269,7 +270,21 @@ async function fillWindow(w) {
   } else if (IMG.test(item.name)) { body.classList.add("media"); body.innerHTML = `<div class="stage"><img src="${src}" alt=""></div>` + meta; }
   else if (VID.test(item.name)) { body.classList.add("media"); body.innerHTML = `<div class="stage"><video src="${src}" controls playsinline></video></div>` + meta; }
   else if (AUD.test(item.name)) body.innerHTML = meta + `<audio src="${src}" controls></audio>`;
-  else if (/\.pdf$/i.test(item.name)) { body.classList.add("media"); body.innerHTML = `<div class="stage"><iframe src="${src}" title="PDF preview"></iframe></div>`; }
+  else if (READABLE.test(item.name)) { // PDF, Word, Excel / CSV, PowerPoint, Markdown: drawn by the document reader
+    body.innerHTML = `<div class="empty rd-loading">OPENING...</div>`;
+    try {
+      const reader = await openReader(body, item, src, { rawUrl: api.raw });
+      if (!WINS.has(w.id)) { reader?.dispose(); return; }
+      w.reader = reader;
+    } catch (e) {
+      if (!WINS.has(w.id)) return;
+      body.innerHTML = meta + `<div class="empty">${escapeHtml(String(e.message || e).toUpperCase())}</div>`;
+      try { // the plain text is still worth showing (Office files, Markdown)
+        const { text } = await api.text(item.path);
+        if (text && WINS.has(w.id)) { const pre = document.createElement("pre"); pre.textContent = text; body.appendChild(pre); }
+      } catch { /* the message is enough */ }
+    }
+  }
   else {
     body.innerHTML = meta + `<div class="empty">reading...</div>`;
     try {
@@ -298,6 +313,8 @@ function closeWindow(id, silent = false) {
   const w = WINS.get(id);
   if (!w) return;
   WINS.delete(id);
+  w.reader?.dispose(); // PDF.js workers, observers, picture URLs
+  w.reader = null;
   galaxy.closeWindow(id, silent); // folds back into its card
   setTimeout(() => { w.el.querySelector(".pbody").innerHTML = ""; }, silent ? 0 : 420); // stops media playback
   if (S.focusWin === id) {
@@ -1213,7 +1230,7 @@ const gestures = new Gestures({
   pinchMove(i, p, d) {
     const g = S.grabs[i];
     if (!g) return;
-    if (g.type === "scroll") g.el.scrollTop -= d.y * 2.2;
+    if (g.type === "scroll") { g.el.scrollTop -= d.y * 2.2; g.el.scrollLeft -= d.x * 2.2; } // sideways too: wide sheets, zoomed PDFs
     else if (g.type === "file") {
       if (!g.carry && Math.hypot(p.x - g.x0, p.y - g.y0) > 50) { g.carry = true; galaxy.beginCarry(g.node); }
       if (g.carry) galaxy.carryTo(p.x, p.y);

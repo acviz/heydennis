@@ -24,6 +24,9 @@ Its idea of an agent with a mind, a voice, a face and hands shaped D.E.N.N.I.S.'
 | [transformers.js](https://github.com/huggingface/transformers.js) | Apache-2.0 | Local speech recognition |
 | [ONNX Runtime Web](https://github.com/microsoft/onnxruntime) | MIT | Runs the speech model |
 | [Mermaid](https://github.com/mermaid-js/mermaid) (with the libraries its build bundles, e.g. DOMPurify, dagre, d3) | MIT | Diagrams |
+| [PDF.js](https://github.com/mozilla/pdf.js) (with its standard fonts, CMaps, ICC profiles, OpenJPEG / JBIG2 decoders) | Apache-2.0 (bundled fonts and decoders under their own licenses, copied alongside) | Document reader: PDF pages |
+| [mammoth](https://github.com/mwilliamson/mammoth.js) (with the libraries its browser build bundles, e.g. JSZip) | BSD-2-Clause | Document reader: Word files |
+| [marked](https://github.com/markedjs/marked) | MIT | Document reader: Markdown |
 | [Whisper](https://github.com/openai/whisper) models (downloaded on first use, ONNX conversions by Xenova) | MIT | Speech-to-text |
 
 ## Runtime dependencies
