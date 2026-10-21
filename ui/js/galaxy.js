@@ -9,6 +9,8 @@
 //     shrink to compact tiles so the scene stays readable
 //   - a blueprint grid behind everything, with the webcam feed shown through it as
 //     a dim hologram in "stage" mode; bloom makes the light bleed like a projection
+//   - themes (themes.js) swap the scenery around all this: a spiral galaxy, a neuron,
+//     a cyberspace grid - crossfading, and easing the colours over
 // Picking is done in screen space with generous radii so a jittery fingertip can
 // still land on a small star.
 import * as THREE from "/vendor/three/three.webgpu.js";
@@ -19,6 +21,7 @@ import {
 import { bloom } from "/vendor/three/addons/tsl/display/BloomNode.js";
 import { CSS2DRenderer, CSS2DObject } from "/vendor/three/addons/renderers/CSS2DRenderer.js";
 import { CSS3DRenderer, CSS3DObject } from "/vendor/three/addons/renderers/CSS3DRenderer.js";
+import { THEMES, buildScenery, themeName } from "./themes.js";
 import { drawCard, drawTile, CARD_W, CARD_H } from "./cards.js";
 
 export const KIND_COLORS = {
@@ -175,7 +178,8 @@ export class Galaxy {
     this.winRenderer.domElement.id = "windows";
     document.body.appendChild(this.winRenderer.domElement);
     this.winScene = new THREE.Scene();
-    this.win = null;
+    this.wins = []; // floating windows, back to front
+    this.winSeq = 0;
     this.insetL = 0; this.insetR = 0;
 
     this.scene = new THREE.Scene();
@@ -201,7 +205,15 @@ export class Galaxy {
       vAspect: uniform(16 / 9),
       assemble: uniform(1), // 0 -> 1 during boot: particles fly in and form the sphere
       gridFade: uniform(1), // 0 -> 1 during boot
+      gridOn: uniform(1), // how much of the blueprint grid the theme shows
+      bgTop: uniform(THEMES.reactor.bg[0].clone()), // the theme's backdrop, top to bottom (linear light)
+      bgBot: uniform(THEMES.reactor.bg[1].clone()),
     };
+    // the theme: its scenery crossfades, and the default pieces ease to what it asks for
+    this.themeName = "reactor";
+    this.look = { ...THEMES.reactor.base };
+    this.daisShown = 1;
+    this.sceneries = []; // [{ name, s: scenery, p: 0..1 shown, goal, wait }]
     this.nodes = [];
     this.armLabels = [];
     this.hovered = null;
@@ -275,7 +287,8 @@ export class Galaxy {
     };
     const grid = gridLine(46, 1.0).mul(0.013).add(gridLine(46 * 5, 1.2).mul(0.022));
     const vignette = smoothstep(1.2, 0.2, length(screenUV.sub(0.5).mul(vec2(1.5, 1.0))));
-    const base = mix(vec3(0, 0, 0), vec3(0.0003, 0.0005, 0.0008), vignette); // linear light: black, the faintest lift at the centre
+    const tint = mix(u.bgTop, u.bgBot, screenUV.y); // the theme's backdrop (Reactor: black, the faintest lift at the centre)
+    const base = mix(vec3(0, 0, 0), tint, vignette);
     // cover-fit the video, mirrored like a selfie view
     const k = u.sAspect.div(u.vAspect);
     const vx0 = select(k.greaterThan(1), screenUV.x, screenUV.x.sub(0.5).mul(k).add(0.5));
@@ -288,7 +301,7 @@ export class Galaxy {
     const lum = dot(vid, vec3(0.3, 0.59, 0.11));
     // crush the blacks so the room behind you stays dark and only you show through
     const holoVid = mix(vid, vec3(0.55, 0.8, 1.0).mul(lum), 0.6).mul(pow(lum, 1.4).mul(0.32)).mul(SCAN);
-    this.scene.backgroundNode = base.add(vec3(0.4, 0.62, 0.8).mul(grid).mul(u.gridFade)).mul(vignette.mul(0.6).add(0.4)).add(holoVid.mul(u.cam));
+    this.scene.backgroundNode = base.add(vec3(0.4, 0.62, 0.8).mul(grid).mul(u.gridFade).mul(u.gridOn)).mul(vignette.mul(0.6).add(0.4)).add(holoVid.mul(u.cam));
   }
 
   /** Show the webcam inside the scene ("stage"), or not ("pip" / "off" use the DOM video). */
@@ -344,10 +357,11 @@ export class Galaxy {
     sphere.group.position.y = SPHERE_Y;
     g.add(sphere.group);
 
-    const frameMats = [];
-    const fm = (o) => { const m = lineMat(FRAME_COLOR.idle, o); frameMats.push(m); return m; };
-    const hm = (o) => { const m = holoMat(FRAME_COLOR.idle, o); frameMats.push(m); return m; };
-    const amber = lineMat(ACCENT, 0.9), white = lineMat("#e6eef3", 0.8);
+    const frameMats = [], daisMats = [];
+    const dm = (m) => { m.userData.base = m.userData.o.value; daisMats.push(m); return m; }; // themes can fade the whole dais
+    const fm = (o) => { const m = dm(lineMat(FRAME_COLOR.idle, o)); frameMats.push(m); return m; };
+    const hm = (o) => { const m = dm(holoMat(FRAME_COLOR.idle, o)); frameMats.push(m); return m; };
+    const amber = dm(lineMat(ACCENT, 0.9)), white = dm(lineMat("#e6eef3", 0.8));
     // a ring lies flat (XZ) at height y and spins about the vertical axis on its own
     const layer = (y, speed, ...objs) => {
       const grp = new THREE.Group();
@@ -399,7 +413,7 @@ export class Galaxy {
 
     // two thin gyroscope rings around the sphere
     const gyros = [0, 1].map((i) => {
-      const m = holoMat(FRAME_COLOR.idle, 0.2, { rim: true });
+      const m = dm(holoMat(FRAME_COLOR.idle, 0.2, { rim: true }));
       frameMats.push(m);
       const t = new THREE.Mesh(new THREE.TorusGeometry(CORE_R + 8 + i * 4, 0.35, 8, 200), m);
       t.rotation.set(1.2 + i * 0.7, i * 0.9, 0);
@@ -412,7 +426,28 @@ export class Galaxy {
     const shock = layer(-30, 0, lines(circlePts(1, 160), shockMat));
     shock.visible = false;
 
-    this.core = { group: g, rings, drop, dropMat, gyros, frameMats, sphere, shock, shockMat, shockT0: -1e9, center: new THREE.Vector3(0, SPHERE_Y, 0), frameColor: new THREE.Color(FRAME_COLOR.idle), pulse: 0 };
+    this.core = { group: g, rings, drop, dropMat, gyros, frameMats, daisMats, sphere, shock, shockMat, shockT0: -1e9, center: new THREE.Vector3(0, SPHERE_Y, 0), frameColor: new THREE.Color(FRAME_COLOR.idle), pulse: 0 };
+  }
+
+  /** Switch the look (see themes.js). The old scenery fades out as the new one fades in. Returns the theme's name. */
+  setTheme(name) {
+    name = themeName(name);
+    if (name === this.themeName) return name;
+    this.themeName = name;
+    for (const e of this.sceneries) e.goal = 0;
+    const s = buildScenery(name, { tex: this.tex, coreR: CORE_R });
+    if (s) {
+      s.fade.value = 0;
+      this.scene.add(s.group);
+      // drawn invisibly for a few frames first, so its shaders are ready before it fades in
+      this.sceneries.push({ name, s, p: 0, goal: 0, wait: 3 });
+    }
+    return name;
+  }
+  /** [deep, hot] sphere colours and the dais colour for a state, in the current theme. */
+  colorsFor(state) {
+    const th = THEMES[this.themeName];
+    return { sphere: th.palette?.[state] || STATE_COLORS[state] || STATE_COLORS.idle, frame: th.frame?.[state] || FRAME_COLOR[state] || FRAME_COLOR.idle };
   }
 
   /** The power-up: grid fades in, rings deploy one by one, particles fly in to form the sphere, the camera swoops down. */
@@ -880,51 +915,77 @@ export class Galaxy {
   }
   endCarry() { this.carried = null; }
 
-  // ---------- the floating file window ----------
-  /**
-   * Float `el` in the scene where the card for `path` is: it grows out of the card, faces you,
-   * and follows the card as the view moves (kept fully on screen). Calling it again with
-   * another path glides the open window over to that card.
-   */
-  showWindow(el, path) {
-    const node = path ? this.nodeByPath(path) : null;
-    const w = this.win;
-    if (w && w.el === el && !w.closing) { w.node = node; this.lastInput = performance.now(); return; }
-    if (w) this.dropWindow();
+  // ---------- floating windows (as many as you like) ----------
+  // Each one is a real DOM element placed in the 3D scene, drawn one CSS pixel per screen
+  // pixel so text and video stay sharp. A window grows out of its card and follows it until
+  // you drag it somewhere (then it stays put); you can resize it, and the front window is
+  // nearest the camera, so it's drawn and clicked on top. The last one in `this.wins` is in front.
+
+  /** Open a window for `el` at the card for `path` (in front). Returns its id. */
+  openWindow(el, path) {
     const obj = new CSS3DObject(el);
     el.style.opacity = "0";
     this.winScene.add(obj);
-    this.win = { obj, el, node, t0: performance.now(), closing: 0, max: 0, maxGoal: 0, pos: null, depth: 0 };
+    const w = { id: ++this.winSeq, obj, el, path, node: path ? this.nodeByPath(path) : null, t0: performance.now(), closing: 0, max: 0, maxGoal: 0, pos: null, screen: null, size: null, snap: false, sx: 0, sy: 0, ww: 0, wh: 0 };
+    this.wins.push(w);
     this.lastInput = performance.now();
+    return w.id;
   }
-
-  /** Fold the window back into its card (or just fade, if the card is gone). */
-  closeWindow(now = false) {
-    const w = this.win;
-    if (!w) return;
-    if (now) return this.dropWindow();
-    if (!w.closing) { w.closing = performance.now(); w.maxGoal = 0; document.body.classList.remove("window-max"); }
+  win(id) { return this.wins.find((w) => w.id === id) || null; }
+  /** Bring a window to the front. */
+  focusWindow(id) {
+    const w = this.win(id);
+    if (!w || w.closing) return;
+    this.wins = this.wins.filter((x) => x !== w);
+    this.wins.push(w);
   }
-
-  dropWindow() {
-    const w = this.win;
+  /** Fold a window back into its card (or just fade it, if the card is gone); `now` skips the animation. */
+  closeWindow(id, now = false) {
+    const w = this.win(id);
     if (!w) return;
+    if (now) return this.dropWindow(w);
+    if (!w.closing) { w.closing = performance.now(); w.maxGoal = 0; this.syncMax(); }
+  }
+  dropWindow(w) {
     this.winScene.remove(w.obj); // CSS3DObject detaches its element from the page
     w.el.style.opacity = "";
-    this.win = null;
-    this.winRenderer.domElement.classList.remove("max");
-    document.body.classList.remove("window-max");
+    this.wins = this.wins.filter((x) => x !== w);
+    this.syncMax();
   }
-
-  /** Expand the window to fill the screen, or bring it back to its card. */
-  maximizeWindow(on) {
-    const w = this.win;
+  /** Expand a window to fill the screen, or bring it back. */
+  maximizeWindow(id, on) {
+    const w = this.win(id);
     if (!w || w.closing) return false;
     w.maxGoal = on ? 1 : 0;
-    document.body.classList.toggle("window-max", on);
+    if (on) this.focusWindow(id);
+    this.syncMax();
     return true;
   }
-  get windowMaximized() { return !!this.win && this.win.maxGoal === 1; }
+  isMaximized(id) { const w = this.win(id); return !!w && w.maxGoal === 1; }
+  get windowMaximized() { return this.wins.some((w) => w.maxGoal === 1); }
+  syncMax() {
+    document.body.classList.toggle("window-max", this.windowMaximized);
+    const raised = this.wins.some((w) => w.maxGoal === 1 || w.max > 0.02); // above the HUD while expanded, until it has shrunk back
+    if (raised !== this.winRaised) { this.winRaised = raised; this.winRenderer.domElement.classList.toggle("max", raised); }
+  }
+  /** Where a window is on screen right now: centre and size, in pixels. */
+  windowRect(id) { const w = this.win(id); return w ? { cx: w.sx, cy: w.sy, w: w.ww, h: w.wh } : null; }
+  /** Pin a window's centre at screen (x, y): it stops following its card. `snap` while dragging. */
+  placeWindow(id, x, y, snap = true) {
+    const w = this.win(id);
+    if (!w) return;
+    w.screen = { x, y };
+    w.snap = snap;
+  }
+  /** Resize a window; returns the size it got (clamped to the screen). */
+  resizeWindow(id, width, height) {
+    const w = this.win(id);
+    if (!w) return null;
+    w.size = { w: Math.round(Math.max(340, Math.min(this.w - 24, width))), h: Math.round(Math.max(240, Math.min(this.h - 24, height))) };
+    w.snap = true;
+    return { ...w.size };
+  }
+  endWindowGesture(id) { const w = this.win(id); if (w) w.snap = false; }
 
   /** The point at screen (x, y) that lies `depth` units in front of the camera. */
   screenToWorld(x, y, depth, out = new THREE.Vector3()) {
@@ -933,70 +994,88 @@ export class Galaxy {
     return out.set((x / this.w) * 2 - 1, -(y / this.h) * 2 + 1, z).unproject(cam);
   }
 
-  updateWindow(dt, now) {
-    const w = this.win;
-    if (!w) return;
+  updateWindows(dt, now) {
+    if (!this.wins.length) return;
     const cam = this.camera;
     cam.updateMatrixWorld();
-    const fwd = cam.getWorldDirection(_wd);
     const fovPx = cam.projectionMatrix.elements[5] * this.h * 0.5;
-    const node = w.node && !w.node.dying && this.nodes.includes(w.node) ? w.node : null;
-
-    // size: a comfortable window when floating, the whole screen (less a margin) when expanded
     const top = 96, bottom = 104, left = 18 + this.insetL, right = 18 + this.insetR;
     const safeW = Math.max(240, this.w - left - right), safeH = Math.max(200, this.h - top - bottom);
-    const fw = Math.min(safeW, Math.max(420, Math.min(680, this.w * 0.42)));
-    const fh = Math.min(safeH, Math.max(300, fw * 0.66));
-    w.max += (w.maxGoal - w.max) * (1 - Math.exp(-dt * 9));
-    if (Math.abs(w.maxGoal - w.max) < 0.002) w.max = w.maxGoal;
-    const m = easeInOut(w.max);
-    const ww = fw + (this.w - 48 - fw) * m, wh = fh + (this.h - 48 - fh) * m;
-    // the window layer rises above the HUD while expanded (and until it has shrunk back)
-    const raised = w.maxGoal === 1 || w.max > 0.02;
-    if (raised !== w.raised) { w.raised = raised; this.winRenderer.domElement.classList.toggle("max", raised); }
-    w.el.style.width = `${Math.round(ww)}px`;
-    w.el.style.height = `${Math.round(wh)}px`;
+    const fw0 = Math.min(safeW, Math.max(420, Math.min(680, this.w * 0.42)));
+    const fh0 = Math.min(safeH, Math.max(300, fw0 * 0.66));
+    const tabs = this.wins.filter((x) => !x.closing).length > 1; // the tab strip sits above an expanded window
+    const n = this.wins.length;
+    for (let i = n - 1; i >= 0; i--) {
+      const w = this.wins[i];
+      if (!w) continue;
+      const rank = n - 1 - i; // 0 = in front
+      // follow its card while there is one (re-attaching if the card comes back); otherwise stay where it is
+      if (!w.screen && (!w.node || w.node.dying || !this.nodes.includes(w.node))) {
+        w.node = w.path ? this.nodeByPath(w.path) : null;
+        if (!w.node && w.pos) w.screen = { x: w.sx, y: w.sy };
+      }
+      const node = w.node && !w.node.dying && this.nodes.includes(w.node) ? w.node : null;
 
-    // where it floats: centred on its card, nudged so the whole window stays on screen
-    let sx = this.w / 2 - (this.insetR - this.insetL) / 2, sy = top + safeH / 2, depth;
-    if (node) {
-      const p = _wv.copy(node.group.position).project(cam);
-      sx = (p.x + 1) * 0.5 * this.w;
-      sy = (1 - p.y) * 0.5 * this.h;
-      depth = Math.max(80, node.group.position.clone().sub(cam.position).dot(fwd) * 0.85);
-    } else depth = w.depth || Math.max(80, this.orbit.radius * 0.8);
-    w.depth = depth;
-    sx = Math.min(this.w - right - fw / 2, Math.max(left + fw / 2, sx));
-    sy = Math.min(this.h - bottom - fh / 2, Math.max(top + fh / 2, sy)) + Math.sin(this.t * 0.8) * 3; // a slow hover
-    // ...or dead centre when expanded
-    sx += (this.w / 2 - sx) * m;
-    sy += (this.h / 2 - sy) * m;
-    const goal = this.screenToWorld(sx, sy, depth);
-    if (!w.pos) w.pos = goal.clone();
-    else w.pos.lerp(goal, 1 - Math.exp(-dt * 10));
+      // size: its own (once resized) or a comfortable default; the whole screen when expanded
+      const fw = w.size ? w.size.w : fw0, fh = w.size ? w.size.h : fh0;
+      w.max += (w.maxGoal - w.max) * (1 - Math.exp(-dt * 9));
+      if (Math.abs(w.maxGoal - w.max) < 0.002) w.max = w.maxGoal;
+      const m = easeInOut(w.max);
+      const maxTop = tabs ? 60 : 24;
+      const ww = fw + (this.w - 48 - fw) * m, wh = fh + (this.h - maxTop - 24 - fh) * m;
+      w.el.style.width = `${Math.round(ww)}px`;
+      w.el.style.height = `${Math.round(wh)}px`;
 
-    // one CSS pixel per screen pixel at that depth, so text and video stay sharp
-    let scale = depth / fovPx;
-    let pos = w.pos;
-    let alpha = 1;
-    const tilt = -((sx - this.w / 2) / this.w) * 0.32 * (1 - m); // angled toward the centre like a curved HUD
-    // opening: grow out of the card; closing: fold back into it
-    const open = easeInOut(Math.min(1, (now - w.t0) / 520));
-    const close = w.closing ? easeInOut(Math.min(1, (now - w.closing) / 380)) : 0;
-    const k = open * (1 - close);
-    if (k < 1) {
-      const from = node ? node.group.position : pos;
-      const fromScale = node ? (node.card.geometry.parameters.width * node.group.scale.x) / fw : scale * 0.6;
-      pos = from.clone().lerp(pos, k);
-      scale = fromScale + (scale - fromScale) * k;
-      alpha = k;
+      // where: pinned where you put it, or centred on its card and kept on screen
+      let sx, sy;
+      if (w.screen) {
+        // keep enough of it on screen to grab it again
+        w.screen.x = Math.min(this.w + fw / 2 - 120, Math.max(120 - fw / 2, w.screen.x));
+        w.screen.y = Math.min(this.h - 48 + fh / 2, Math.max(fh / 2 + 4, w.screen.y));
+        sx = w.screen.x; sy = w.screen.y;
+      } else {
+        sx = this.w / 2 - (this.insetR - this.insetL) / 2; sy = top + safeH / 2;
+        if (node) {
+          const p = _wv.copy(node.group.position).project(cam);
+          sx = (p.x + 1) * 0.5 * this.w;
+          sy = (1 - p.y) * 0.5 * this.h;
+        }
+        sx = Math.min(this.w - right - fw / 2, Math.max(left + fw / 2, sx));
+        sy = Math.min(this.h - bottom - fh / 2, Math.max(top + fh / 2, sy)) + Math.sin(this.t * 0.8 + w.id) * 3; // a slow hover
+      }
+      sx += (this.w / 2 - sx) * m;
+      sy += (maxTop + (this.h - maxTop - 24) / 2 - sy) * m;
+      w.sx = sx; w.sy = sy; w.ww = ww; w.wh = wh;
+      // the front window is nearest the camera: drawn, and clicked, on top. Each step back is
+      // deeper than a tilted window's edge can reach, so windows never cut through each other.
+      const depth = 150 * Math.pow(1.18, rank); // rank 0 (in front) is the nearest
+      const goal = this.screenToWorld(sx, sy, depth);
+      if (!w.pos || w.snap) w.pos = goal.clone();
+      else w.pos.lerp(goal, 1 - Math.exp(-dt * 12));
+
+      let scale = depth / fovPx; // one CSS pixel per screen pixel at that depth
+      let pos = w.pos;
+      let alpha = 1;
+      const tilt = -((sx - this.w / 2) / this.w) * 0.26 * (1 - m); // angled toward the centre like a curved HUD
+      // opening: grow out of the card; closing: fold back into it
+      const open = easeInOut(Math.min(1, (now - w.t0) / 520));
+      const close = w.closing ? easeInOut(Math.min(1, (now - w.closing) / 380)) : 0;
+      const k = open * (1 - close);
+      if (k < 1) {
+        const from = node ? node.group.position : pos;
+        const fromScale = node ? (node.card.geometry.parameters.width * node.group.scale.x) / fw : scale * 0.6;
+        pos = from.clone().lerp(pos, k);
+        scale = fromScale + (scale - fromScale) * k;
+        alpha = k;
+      }
+      w.obj.position.copy(pos);
+      w.obj.quaternion.copy(cam.quaternion);
+      w.obj.rotateY(tilt);
+      w.obj.scale.setScalar(scale);
+      w.el.style.opacity = alpha.toFixed(3);
+      if (w.closing && close >= 1) this.dropWindow(w);
     }
-    w.obj.position.copy(pos);
-    w.obj.quaternion.copy(cam.quaternion);
-    w.obj.rotateY(tilt);
-    w.obj.scale.setScalar(scale);
-    w.el.style.opacity = alpha.toFixed(3);
-    if (w.closing && close >= 1) this.dropWindow();
+    this.syncMax();
   }
 
   setState(s) { this.state = s; }
@@ -1015,7 +1094,7 @@ export class Galaxy {
     o.vTheta *= Math.pow(0.04, dt);
     o.vPhi *= Math.pow(0.04, dt);
     if (now - this.lastInput > 120) { o.theta += o.vTheta; o.phi = Math.max(0.22, Math.min(1.5, o.phi + o.vPhi)); }
-    if (this.autoRotate && !this.carried && !this.win) o.theta += dt * 0.035 * this.idleBlend;
+    if (this.autoRotate && !this.carried && !this.wins.length) o.theta += dt * 0.035 * this.idleBlend;
     // boot: ease the camera down from high above
     if (this.bootT0) {
       const b = Math.min(1, (now - this.bootT0) / this.bootMs);
@@ -1048,10 +1127,10 @@ export class Galaxy {
     c.pulse *= Math.pow(0.02, dt);
     u.level.value = Math.min(1, this.smoothLevel + c.pulse * 0.25);
     u.pull.value += ((this.state === "listening" ? 1 : 0) - u.pull.value) * (1 - Math.exp(-dt * 4));
-    const [deep, hot] = STATE_COLORS[this.state] || STATE_COLORS.idle;
+    const look = this.colorsFor(this.state), [deep, hot] = look.sphere;
     u.deep.value.lerp(new THREE.Color(deep), k6);
     u.hot.value.lerp(new THREE.Color(hot), k6);
-    c.frameColor.lerp(new THREE.Color(FRAME_COLOR[this.state] || FRAME_COLOR.idle), k6);
+    c.frameColor.lerp(new THREE.Color(look.frame), k6);
     for (const m of c.frameMats) m.userData.c.value.copy(c.frameColor);
     const speed = this.state === "thinking" ? 3.4 : this.state === "listening" ? 0.6 : this.state === "speaking" ? 1.6 : 1;
     u.t.value += dt * speed;
@@ -1067,7 +1146,8 @@ export class Galaxy {
     const sk = (now - c.shockT0) / 900;
     c.shock.visible = sk >= 0 && sk < 1;
     if (c.shock.visible) { c.shock.scale.setScalar(60 + easeOut(sk) * 520); c.shockMat.userData.o.value = 0.55 * (1 - sk); }
-    if (this.bloom) this.bloom.strength.value = 0.55 + u.level.value * 0.6 + (this.state === "thinking" ? 0.1 : 0);
+    this.updateTheme(dt, speed);
+    if (this.bloom) this.bloom.strength.value = this.look.bloom + u.level.value * 0.6 + (this.state === "thinking" ? 0.1 : 0);
 
     // camera feed fade + aspect
     u.cam.value += (this.camGoal - u.cam.value) * (1 - Math.exp(-dt * 4));
@@ -1133,8 +1213,38 @@ export class Galaxy {
 
     if (this.initialized) this.post.render();
     this.labelRenderer.render(this.scene, this.camera);
-    this.updateWindow(dt, now);
-    if (this.win) this.winRenderer.render(this.winScene, this.camera);
+    this.updateWindows(dt, now);
+    if (this.wins.length) this.winRenderer.render(this.winScene, this.camera);
+  }
+
+  /** Ease the default pieces and the backdrop toward the theme, and crossfade the sceneries. */
+  updateTheme(dt, speed) {
+    const th = THEMES[this.themeName], u = this.u, k = 1 - Math.exp(-dt * 2.4);
+    for (const key in th.base) this.look[key] += (th.base[key] - this.look[key]) * k;
+    u.gridOn.value = this.look.grid;
+    u.bgTop.value.lerp(th.bg[0], k);
+    u.bgBot.value.lerp(th.bg[1], k);
+    this.stars.material.opacity = 0.8 * this.look.stars;
+    this.stars.visible = this.look.stars > 0.004;
+    this.floor.material.userData.o.value = 0.045 * this.look.floor;
+    this.floor.visible = this.look.floor > 0.004;
+    const dais = this.look.dais;
+    if (Math.abs(dais - this.daisShown) > 0.0005 || (dais < 0.004) !== !this.core.rings[0].visible) {
+      for (const m of this.core.daisMats) m.userData.o.value = m.userData.base * dais;
+      for (const ring of this.core.rings) ring.visible = dais > 0.004;
+      for (const gy of this.core.gyros) gy.visible = dais > 0.004;
+      this.daisShown = dais;
+    }
+    if (!this.sceneries.length) return;
+    const ctx = { level: u.level.value, speed, state: this.state, center: this.core.sphere.group.position, extent: this.orbit.radius };
+    this.sceneries = this.sceneries.filter((e) => {
+      if (e.wait > 0) { e.wait--; if (!e.wait && e.name === this.themeName) e.goal = 1; }
+      e.p = Math.max(0, Math.min(1, e.p + (e.goal ? dt : -dt) / 1.4));
+      if (!e.goal && !e.wait && e.p <= 0) { this.scene.remove(e.s.group); e.s.dispose(); return false; }
+      e.s.fade.value = easeInOut(e.p) * u.gridFade.value; // it also powers up with the boot
+      e.s.update(dt, ctx);
+      return true;
+    });
   }
 
   disposeNode(n) {
@@ -1197,6 +1307,7 @@ export class Orb {
   }
 
   setState(s) { this.state = s; }
+  setTheme(name) { this.palette = THEMES[themeName(name)].palette || null; }
   setLevel(v) { this.level = Math.max(0, Math.min(1, v)); }
   pulse() { this.pulseV = 1; }
 
@@ -1211,7 +1322,7 @@ export class Orb {
     u.level.value = Math.min(1, this.smooth + this.pulseV * 0.25);
     u.pull.value += ((this.state === "listening" ? 1 : 0) - u.pull.value) * (1 - Math.exp(-dt * 4));
     u.assemble.value = easeOut(Math.min(1, (performance.now() - this.born) / 1100)); // particles fly in when it appears
-    const [deep, hot] = STATE_COLORS[this.state] || STATE_COLORS.idle;
+    const [deep, hot] = this.palette?.[this.state] || STATE_COLORS[this.state] || STATE_COLORS.idle;
     u.deep.value.lerp(new THREE.Color(deep), k6);
     u.hot.value.lerp(new THREE.Color(hot), k6);
     const speed = this.state === "thinking" ? 3.4 : this.state === "listening" ? 0.6 : this.state === "speaking" ? 1.6 : 1;

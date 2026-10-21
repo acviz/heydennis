@@ -201,6 +201,13 @@ export class FileIndex {
     } catch { /* gone already */ }
   }
 
+  /** A file or folder left the mapped folders (undo parked it): forget it and everything inside. */
+  noteRemoved(p) {
+    const lp = p.toLowerCase();
+    const list = this._files; // the live list (the finished index, or the one being built)
+    for (let i = list.length - 1; i >= 0; i--) { const l = list[i].p.toLowerCase(); if (l === lp || l.startsWith(lp + path.sep)) list.splice(i, 1); }
+  }
+
   noteMoved(from, to) {
     const lf = from.toLowerCase();
     for (const f of this._files) {
@@ -223,6 +230,16 @@ export class FileIndex {
   }
 
   /** Largest / newest helpers for "what's eating my disk" style questions. */
+  /** Every indexed folder inside `under`, with its totals: [{ p, files, bytes, m }]. */
+  folders(under) {
+    const out = [];
+    for (const d of this._dirs.values()) if (!under || isInside(d.p, under)) out.push({ p: d.p, files: d.files, bytes: d.bytes, m: d.m });
+    return out;
+  }
+
+  /** Indexed files inside `under` (the live list; don't modify it). */
+  filesUnder(under) { return this._files.filter((f) => !under || isInside(f.p, under)); }
+
   largest(under, limit = 15) {
     return this._files.filter((f) => !under || isInside(f.p, under)).sort((a, b) => b.s - a.s).slice(0, limit);
   }

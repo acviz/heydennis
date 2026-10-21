@@ -3,7 +3,7 @@
 // storage, native open/reveal, a folder picker, camera/mic permission prompts,
 // a global shortcut to summon D.E.N.N.I.S. from anywhere, fullscreen, reboot, and the
 // compact mode: just the core, floating on the desktop in a small transparent window.
-import { app, BrowserWindow, session, shell, safeStorage, dialog, globalShortcut, systemPreferences, Menu, ipcMain, screen } from "electron";
+import { app, BrowserWindow, session, shell, safeStorage, dialog, globalShortcut, systemPreferences, Menu, ipcMain, screen, desktopCapturer } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,32 @@ const platform = {
   revealPath(p) { shell.showItemInFolder(p); },
   async pickFolder() {
     const r = await dialog.showOpenDialog(win, { title: "Choose a folder for D.E.N.N.I.S.", properties: ["openDirectory"] });
+    return r.canceled ? null : r.filePaths[0] || null;
+  },
+  /**
+   * Screenshots for "look at my screen": the display under the cursor (or every display),
+   * scaled to at most 1600 px, as JPEG. D.E.N.N.I.S.'s own windows fade out for a moment so
+   * he sees what's behind them.
+   */
+  async captureScreen({ all = false } = {}) {
+    const displays = all ? screen.getAllDisplays() : [screen.getDisplayNearestPoint(screen.getCursorScreenPoint())];
+    const ours = [win, orb].filter((w) => w && !w.isDestroyed() && w.isVisible());
+    const was = ours.map((w) => w.getOpacity());
+    ours.forEach((w) => w.setOpacity(0));
+    await new Promise((r) => setTimeout(r, 220)); // let the compositor drop them
+    try {
+      const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 1600, height: 1600 } });
+      return displays.map((d, i) => {
+        const src = sources.find((s) => s.display_id === String(d.id)) || sources[i] || sources[0];
+        const img = src.thumbnail;
+        return { label: all ? `display ${i + 1}${d.id === screen.getPrimaryDisplay().id ? " (main)" : ""}` : "your screen", width: img.getSize().width, height: img.getSize().height, jpeg: img.toJPEG(82) };
+      });
+    } finally {
+      ours.forEach((w, i) => { if (!w.isDestroyed()) w.setOpacity(was[i]); });
+    }
+  },
+  async pickFile({ title = "Choose a file", filters } = {}) {
+    const r = await dialog.showOpenDialog(win, { title, properties: ["openFile"], filters });
     return r.canceled ? null : r.filePaths[0] || null;
   },
 };

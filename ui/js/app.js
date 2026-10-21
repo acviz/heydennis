@@ -5,6 +5,10 @@ import { Galaxy, KIND_COLORS, KIND_NAMES, MAX_NODES, fmtBytes, escapeHtml } from
 import { Gestures, HandTracker, synthHand, handMetrics, dedupe, cameraRank } from "./hands.js";
 import { Voice } from "./voice.js";
 import { HandsFree, isStopPhrase, isRepeatPhrase } from "./handsfree.js";
+import { Caps } from "./caps.js";
+import { matchCommand } from "./commands.js";
+import { THEMES, THEME_ORDER, themeName } from "./themes.js";
+import { renderDiagram, standaloneSvg, toPng, diagramSize, fitScale } from "./diagram.js";
 import { Hud } from "./hud.js";
 
 const $ = (s) => document.querySelector(s);
@@ -40,7 +44,7 @@ setInterval(() => {
   const engine = voice.engineNow();
   instruments.setTelemetry({
     state: st.toLowerCase(),
-    brain: S.mock ? "mock" : `${S.config?.model || "?"} · ${S.config?.effort || "?"}`,
+    brain: S.mock ? "mock" : `${brainLabel(S.config)} · ${S.config?.effort || "?"}`,
     voice: !v.speak ? "muted" : engine === "kokoro" ? `${(v.kokoroVoice || "bm_daniel").replace("bm_", "")} · local gpu` : engine === "elevenlabs" ? "elevenlabs" : "system",
     mic: voice.mic ? (voice.mic.label || "on").replace(/^Default - /, "").slice(0, 26) : S.hf === "off" ? "off" : "waking",
     hands: S.handsLive ? (tracker.cameraLabel || "on").slice(0, 26) : "off",
@@ -126,7 +130,6 @@ function pageItems(level) {
 
 function show(level, from) {
   S.level = level;
-  closePreview(true);
   galaxy.setItems(pageItems(level), { mode: level.mode, from });
   renderCrumbs();
   instruments.setLevel(level);
@@ -177,9 +180,7 @@ async function refresh(path) {
   try {
     const level = await load(levelDesc(S.level));
     level.offset = S.level.offset;
-    const sel = S.selected?.path;
     show(level, null);
-    if (sel) { const it = level.items.find((i) => i.path === sel); if (it) showPreview(it); }
   } catch { /* folder vanished */ }
 }
 
@@ -221,28 +222,46 @@ function activate(target) {
   if (it.isDir) {
     if (it.missing) return toast(`${it.name} isn't available right now`, true);
     openFolder(it.path);
-  } else if (S.selected?.path === it.path) {
+  } else if (S.selected?.path === it.path && windowFor(it.path)) {
     closePreview();
   } else showPreview(it);
 }
 
 // ---------------------------------------------------------------- preview
 const IMG = /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i, VID = /\.(mp4|webm|mov|m4v|mkv)$/i, AUD = /\.(mp3|wav|flac|m4a|aac|ogg|opus)$/i;
-// The file window floats in the 3D scene beside its card (galaxy.showWindow places it), so it
-// only joins the page while a file is open.
-const PV = $("#preview");
-PV.remove();
+// Floating file windows, as many as you like (galaxy.openWindow places them in the 3D scene).
+// A window grows out of its card and follows it until you drag it by its title bar; its corner
+// grip resizes it; the tab strip (or the wheel over it, or Ctrl+Tab) switches between them.
+const WIN_TPL = $("#fwin-tpl");
+const WINS = new Map(); // window id -> { id, item, el }
+const MAX_WINDOWS = 8;
+const focused = () => WINS.get(S.focusWin) || null;
+const windowFor = (path) => [...WINS.values()].find((w) => w.item.path === path) || null;
+
+/** Open the window for a file (or bring it to the front if it's already open). */
 async function showPreview(item) {
-  const fresh = !PV.classList.contains("open");
-  S.selected = item;
-  galaxy.select(item.path);
-  const p = PV;
-  p.querySelector(".kdot").style.color = KIND_COLORS[item.kind] || KIND_COLORS.other;
-  p.querySelector(".ptitle b").textContent = item.name;
-  p.querySelector(".ptitle small").textContent = `${KIND_NAMES[item.kind] || item.kind} · ${fmtBytes(item.size)} · ${fmtDate(item.mtime)}`;
-  p.querySelector("[data-act=open]").textContent = item.isDir ? "OPEN FOLDER" : "OPEN";
-  const body = p.querySelector(".pbody");
-  body.innerHTML = "";
+  const have = windowFor(item.path);
+  if (have) { focusWindow(have.id); return have; }
+  if (WINS.size >= MAX_WINDOWS) closeWindow([...WINS.keys()][0]); // the oldest makes room
+  const el = WIN_TPL.content.firstElementChild.cloneNode(true);
+  const w = { id: 0, item, el };
+  w.id = galaxy.openWindow(el, item.path);
+  WINS.set(w.id, w);
+  wireWindow(w);
+  el.classList.add("open");
+  focusWindow(w.id);
+  await fillWindow(w);
+  return w;
+}
+
+async function fillWindow(w) {
+  const { el, item } = w;
+  if (item.kind === "diagram") return fillDiagram(w);
+  el.querySelector(".kdot").style.color = KIND_COLORS[item.kind] || KIND_COLORS.other;
+  el.querySelector(".ptitle b").textContent = item.name;
+  el.querySelector(".ptitle small").textContent = `${KIND_NAMES[item.kind] || item.kind} · ${fmtBytes(item.size)} · ${fmtDate(item.mtime)}`;
+  el.querySelector("[data-act=open]").textContent = item.isDir ? "OPEN FOLDER" : "OPEN";
+  const body = el.querySelector(".pbody");
   body.className = "pbody";
   const meta = `<div class="meta"><b>${escapeHtml(item.path)}</b><br>${fmtBytes(item.size)} · modified ${fmtDate(item.mtime)}</div>`;
   const src = api.raw(item.path);
@@ -252,52 +271,219 @@ async function showPreview(item) {
   else if (VID.test(item.name)) { body.classList.add("media"); body.innerHTML = `<div class="stage"><video src="${src}" controls playsinline></video></div>` + meta; }
   else if (AUD.test(item.name)) body.innerHTML = meta + `<audio src="${src}" controls></audio>`;
   else if (/\.pdf$/i.test(item.name)) { body.classList.add("media"); body.innerHTML = `<div class="stage"><iframe src="${src}" title="PDF preview"></iframe></div>`; }
-  else body.innerHTML = meta + `<div class="empty">reading...</div>`;
-  if (fresh) setWindowMax(false);
-  galaxy.showWindow(PV, item.path);
-  p.classList.add("open");
-  document.body.classList.add("preview-open");
-  if (!item.isDir && !IMG.test(item.name) && !VID.test(item.name) && !AUD.test(item.name) && !/\.pdf$/i.test(item.name)) {
+  else {
+    body.innerHTML = meta + `<div class="empty">reading...</div>`;
     try {
       const { text, truncated } = await api.text(item.path);
-      if (S.selected !== item) return;
+      if (!WINS.has(w.id)) return;
       body.innerHTML = text != null ? `<pre></pre>` : meta + `<div class="empty">NO PREVIEW FOR THIS KIND OF FILE<br><br>Ask D.E.N.N.I.S. about it, or open it.</div>`;
       if (text != null) body.querySelector("pre").textContent = text + (truncated ? "\n\n[... preview truncated]" : "");
     } catch (e) { body.innerHTML = meta + `<div class="empty">${escapeHtml(e.message)}</div>`; }
   }
 }
-function closePreview(silent) {
-  S.selected = null;
-  galaxy.select(null);
-  const p = PV;
-  p.classList.remove("open");
-  setWindowMax(false);
-  document.body.classList.remove("preview-open");
-  galaxy.closeWindow(!!silent); // folds back into its card
-  if (!silent) setTimeout(() => { if (!S.selected) p.querySelector(".pbody").innerHTML = ""; }, 420); // stops media playback
-  else p.querySelector(".pbody").innerHTML = "";
+
+/** Bring a window to the front; it becomes the "selected file" for D.E.N.N.I.S. */
+function focusWindow(id) {
+  const w = WINS.get(id);
+  if (!w) return;
+  S.focusWin = id;
+  S.selected = w.item;
+  galaxy.focusWindow(id);
+  galaxy.select(w.item.path);
+  for (const x of WINS.values()) x.el.classList.toggle("focus", x.id === id);
+  document.body.classList.add("preview-open");
+  renderTabs();
 }
-/** Expand the file window to fill the screen, or shrink it back beside its card. */
-function setWindowMax(on) {
-  if (on && !galaxy.maximizeWindow(true)) return;
-  if (!on) galaxy.maximizeWindow(false);
-  PV.classList.toggle("max", on);
-  PV.querySelector("[data-act=max]").title = on ? "Restore (F or Esc)" : "Full screen (F)";
+
+function closeWindow(id, silent = false) {
+  const w = WINS.get(id);
+  if (!w) return;
+  WINS.delete(id);
+  galaxy.closeWindow(id, silent); // folds back into its card
+  setTimeout(() => { w.el.querySelector(".pbody").innerHTML = ""; }, silent ? 0 : 420); // stops media playback
+  if (S.focusWin === id) {
+    const next = [...WINS.values()].pop();
+    if (next) focusWindow(next.id);
+    else { S.focusWin = null; S.selected = null; galaxy.select(null); document.body.classList.remove("preview-open"); }
+  }
+  renderTabs();
 }
-const windowOpen = () => PV.classList.contains("open");
-PV.querySelector(".phead").addEventListener("dblclick", (e) => { if (!e.target.closest("button")) setWindowMax(!galaxy.windowMaximized); });
+/** Close the front window. */
+function closePreview(silent) { const w = focused(); if (w) closeWindow(w.id, silent); }
+function closeAllWindows(silent) { for (const id of [...WINS.keys()]) closeWindow(id, silent); }
+
+/** Expand a window to fill the screen, or bring it back. */
+function setWindowMax(on, id = S.focusWin) {
+  const w = WINS.get(id);
+  if (!w) return;
+  if (!galaxy.maximizeWindow(id, on)) return;
+  w.el.classList.toggle("max", on);
+  w.el.querySelector("[data-act=max]").title = on ? "Restore (F or Esc)" : "Full screen (F)";
+  if (on) focusWindow(id);
+}
+const windowOpen = () => WINS.size > 0;
+const focusedMax = () => !!S.focusWin && galaxy.isMaximized(S.focusWin);
+
+/** Buttons, dragging by the title bar, resizing by the corner grip. */
+function wireWindow(w) {
+  const { el } = w;
+  el.addEventListener("pointerdown", () => { if (S.focusWin !== w.id) focusWindow(w.id); }, true); // a touch anywhere brings it forward
+  el.addEventListener("click", (e) => {
+    const act = e.target.closest("[data-act]")?.dataset.act;
+    const it = w.item;
+    if (!act) return;
+    if (act === "close") return closeWindow(w.id);
+    if (act === "max") return setWindowMax(!galaxy.isMaximized(w.id), w.id);
+    if (it.kind === "diagram") {
+      if (act === "ask") ask(`Walk me through the "${it.name}" diagram.`);
+      if (act === "open") saveDiagram(it);
+      if (act === "reveal") copyText(it.diagram.code).then((ok) => toast(ok ? "Mermaid code copied" : "Couldn't reach the clipboard", !ok));
+      return;
+    }
+    if (act === "ask") askAbout(it);
+    if (act === "open") it.isDir ? openFolder(it.path) : api.open(it.path).then((r) => toast(r.revealed ? "That's a program - revealed it instead of running it" : `Opening ${it.name}`)).catch((er) => toast(er.message, true));
+    if (act === "reveal") api.reveal(it.path).catch((er) => toast(er.message, true));
+  });
+  const head = el.querySelector(".phead");
+  head.addEventListener("dblclick", (e) => { if (!e.target.closest("button")) setWindowMax(!galaxy.isMaximized(w.id), w.id); });
+  // a pointer gesture that follows the mouse until release (pointer capture keeps it when you move fast)
+  const gesture = (target, onMove) => (e) => {
+    if (e.button !== 0 || galaxy.isMaximized(w.id)) return;
+    const r = galaxy.windowRect(w.id);
+    if (!r) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const start = { x: e.clientX, y: e.clientY, ...r };
+    target.setPointerCapture(e.pointerId);
+    el.classList.add("moving");
+    const move = (ev) => onMove(start, ev.clientX - start.x, ev.clientY - start.y);
+    const up = () => {
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+      target.removeEventListener("pointercancel", up);
+      el.classList.remove("moving");
+      galaxy.endWindowGesture(w.id);
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+    target.addEventListener("pointercancel", up);
+  };
+  head.addEventListener("pointerdown", (e) => { if (!e.target.closest("button")) gesture(head, (st, dx, dy) => galaxy.placeWindow(w.id, st.cx + dx, st.cy + dy))(e); });
+  const grip = el.querySelector(".rz");
+  grip.addEventListener("pointerdown", gesture(grip, (st, dx, dy) => {
+    // the top-left corner stays put while the bottom-right follows the pointer
+    const size = galaxy.resizeWindow(w.id, st.w + dx, st.h + dy);
+    if (size) galaxy.placeWindow(w.id, st.cx - st.w / 2 + size.w / 2, st.cy - st.h / 2 + size.h / 2);
+  }));
+}
+
+// ---- the tab strip: one tab per window; click, wheel over it, or Ctrl+Tab to switch
+function renderTabs() {
+  const nav = $("#wintabs");
+  nav.classList.toggle("show", WINS.size > 1);
+  nav.innerHTML = "";
+  for (const w of WINS.values()) {
+    const b = document.createElement("button");
+    b.className = "wtab" + (w.id === S.focusWin ? " on" : "");
+    b.dataset.hand = "";
+    b.title = w.item.path;
+    b.innerHTML = `<i style="color:${KIND_COLORS[w.item.kind] || KIND_COLORS.other}"></i><span>${escapeHtml(w.item.name)}</span><em data-close title="Close">&times;</em>`;
+    b.onclick = (e) => { if (e.target.closest("[data-close]")) closeWindow(w.id); else focusWindow(w.id); };
+    nav.appendChild(b);
+  }
+  nav.querySelector(".on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+function cycleWindows(dir) {
+  const ids = [...WINS.keys()];
+  if (ids.length < 2) return;
+  const i = ids.indexOf(S.focusWin);
+  focusWindow(ids[(i + dir + ids.length) % ids.length]);
+}
+let wheelAt = 0;
+$("#wintabs").addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const now = performance.now();
+  if (now - wheelAt < 160) return; // one step per flick, even on a trackpad
+  wheelAt = now;
+  cycleWindows((e.deltaY || e.deltaX) > 0 ? 1 : -1);
+}, { passive: false });
 galaxy.winRenderer.domElement.addEventListener("click", (e) => { if (e.target === galaxy.winRenderer.domElement) setWindowMax(false); }); // click outside an expanded window
-PV.addEventListener("click", (e) => {
-  const act = e.target.closest("[data-act]")?.dataset.act;
-  const it = S.selected;
-  if (!act) return;
-  if (act === "close") return closePreview();
-  if (act === "max") return setWindowMax(!galaxy.windowMaximized);
-  if (!it) return;
-  if (act === "ask") askAbout(it);
-  if (act === "open") it.isDir ? openFolder(it.path) : api.open(it.path).then((r) => toast(r.revealed ? "That's a program - revealed it instead of running it" : `Opening ${it.name}`)).catch((er) => toast(er.message, true));
-  if (act === "reveal") api.reveal(it.path).catch((er) => toast(er.message, true));
-});
+// ---- diagrams (show_diagram): Mermaid drawn into a window of its own, styled like the HUD
+let diagramSeq = 0;
+async function showDiagram(ev) {
+  let svg;
+  try { svg = await renderDiagram(ev.mermaid); } catch (e) {
+    const error = String(e?.message || e?.str || e).slice(0, 1500);
+    if (ev.reply) api.uiReply(ev.reply, { ok: false, error }).catch(() => {});
+    else toast(`Couldn't draw that diagram: ${error.split("\n")[0]}`, true);
+    return;
+  }
+  if (S.compact) setCompact(false);
+  const item = { path: `diagram:${++diagramSeq}`, name: ev.title || "Diagram", kind: "diagram", isDir: false, size: 0, mtime: Date.now(), diagram: { code: ev.mermaid, svg } };
+  const w = await showPreview(item);
+  const nat = diagramSize(svg);
+  if (w && nat) { // size the window to the drawing, within the screen (wide ones scroll rather than shrink to nothing)
+    const W = Math.min(innerWidth * 0.86, Math.max(560, nat.w * 0.95 + 48));
+    const s = fitScale(nat, W - 48, Infinity), scrolls = nat.w * s > W - 48;
+    galaxy.resizeWindow(w.id, W, Math.min(innerHeight * 0.78, Math.max(300, nat.h * s + 178 + (scrolls ? 14 : 0))));
+  }
+  if (!ev.reply) return;
+  const reply = { ok: true };
+  try {
+    if (ev.want === "png") reply.png = await toPng(svg);
+    if (ev.want === "svg") reply.svg = standaloneSvg(svg).text;
+  } catch (e) { reply.pngError = String(e?.message || e); }
+  api.uiReply(ev.reply, reply).catch(() => {});
+}
+function fillDiagram(w) {
+  const { el, item } = w;
+  el.querySelector(".kdot").style.color = "var(--cyan)";
+  el.querySelector(".ptitle b").textContent = item.name;
+  el.querySelector(".ptitle small").textContent = "Diagram · drawn by D.E.N.N.I.S.";
+  el.querySelector("[data-act=open]").textContent = "SAVE";
+  el.querySelector("[data-act=reveal]").textContent = "COPY MERMAID";
+  const body = el.querySelector(".pbody");
+  body.className = "pbody diagram";
+  body.innerHTML = `<div class="dstage">${item.diagram.svg}</div>`; // Mermaid's own output, sanitised (securityLevel strict)
+  const svg = body.querySelector("svg"), nat = diagramSize(item.diagram.svg);
+  if (!svg || !nat) return;
+  svg.removeAttribute("style");
+  // as big as the window allows (re-fitted when it's resized or goes full screen), never too small to read
+  // (measured on the window body, whose size doesn't depend on the drawing - so no resize loop - once per frame)
+  let last = 0, queued = false;
+  const fit = () => {
+    queued = false;
+    const s = fitScale(nat, body.clientWidth - 36, body.clientHeight - 28);
+    if (Math.abs(s - last) < 0.005) return;
+    last = s;
+    svg.setAttribute("width", String(Math.round(nat.w * s)));
+    svg.setAttribute("height", String(Math.round(nat.h * s)));
+  };
+  fit();
+  new ResizeObserver(() => { if (!queued) { queued = true; requestAnimationFrame(fit); } }).observe(body); // goes with the window
+}
+async function saveDiagram(it) {
+  try {
+    const svg = standaloneSvg(it.diagram.svg).text;
+    let png = null;
+    try { png = await toPng(it.diagram.svg); } catch { /* the SVG alone will do */ }
+    const r = await api.saveDiagram(it.name, svg, png);
+    toast(`Saved: ${base(r.path)}`);
+    api.reveal(r.path).catch(() => {});
+  } catch (e) { toast(e.message, true); }
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* fall back */ }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.cssText = "position:fixed;opacity:0";
+  document.body.appendChild(ta);
+  ta.select();
+  const ok = document.execCommand("copy");
+  ta.remove();
+  return ok;
+}
+
 function askAbout(item) {
   S.selected = item;
   ask(item.isDir ? "What's in this folder? Give me the highlights." : "Tell me about this file.", { selected: item.path });
@@ -322,7 +508,13 @@ const TOOL_LABEL = {
   create_folder: (i) => `creating folder ${base(i.path)}`, move_file: (i) => `moving ${base(i.source)} -> ${base(i.destination)}`,
   remember: () => "saving to memory", system_status: () => "checking systems", control_interface: (i) => `interface: ${i.action}`,
   web_search: () => "searching the web",
+  use_skill: (i) => `using the ${i.name} skill`, read_skill_file: (i) => `reading ${base(i.path)} from ${i.skill}`, create_skill: (i) => `saving the skill "${i.name}"`,
+  save_generated_file: (i) => `saving ${i.filename || "the new file"} to ${base(i.folder)}`,
+  code_execution: () => "working in the sandbox", bash_code_execution: () => "running code in the sandbox", text_editor_code_execution: () => "editing in the sandbox",
+  show_diagram: (i) => `drawing ${i.title ? `"${i.title}"` : "a diagram"}`,
+  deploy_minion: (i) => `deploying ${i.minion || "a helper"}`, create_minion: (i) => `creating the minion ${i.name}`, minion_status: () => "checking on the minions", recall_minion: (i) => `recalling ${i.id}`,
 };
+const toolLabel = (name, input) => (TOOL_LABEL[name] || (() => (name.startsWith("mcp__") ? name.slice(5).replace("__", ": ").replace(/_/g, " ") : name)))(input || {});
 const base = (p) => String(p || "").split(/[\\/]/).filter(Boolean).pop() || p || "";
 const toolLines = new Map();
 
@@ -352,7 +544,7 @@ function onAgentEvent(ev) {
       break;
     case "tool": {
       if (ev.status === "start") { setState("thinking"); break; }
-      const label = (TOOL_LABEL[ev.name] || (() => ev.name))(ev.input || toolLines.get(ev.id)?.input || {});
+      const label = toolLabel(ev.name, ev.input || toolLines.get(ev.id)?.input);
       if (ev.status === "run") { const el = addMsg("tool", label); el.classList.add("run"); toolLines.set(ev.id, { el, input: ev.input }); showProgress(label); }
       else { const t = toolLines.get(ev.id); if (t) { t.el.classList.remove("run"); t.el.classList.add(ev.status); } else if (ev.name === "web_search") addMsg("tool", "searched the web").classList.add("done"); }
       break;
@@ -379,23 +571,27 @@ function onAgentEvent(ev) {
 
 function handleUi(ev) {
   // he's about to show you something: come back from compact mode first
-  if (S.compact && ["navigate", "present", "refresh", "home", "back"].includes(ev.action)) setCompact(false);
+  if (S.compact && ["navigate", "present", "refresh", "home", "back", "diagram"].includes(ev.action)) setCompact(false);
   switch (ev.action) {
     case "compact": setCompact(true); break;
     case "reboot": reboot(); break;
+    case "theme": setTheme(ev.theme === "next" || !ev.theme ? nextTheme() : ev.theme); break;
+    case "notes_start": setTimeout(() => startNotes(ev.title, { quiet: true }), 200); break;
+    case "capture_flash": document.body.classList.remove("flash"); void document.body.offsetWidth; document.body.classList.add("flash"); setTimeout(() => document.body.classList.remove("flash"), 700); toast("Looked at your screen"); break;
     case "navigate":
       openFolder(ev.path).then((level) => {
         if (level && ev.select) { const it = level.items.find((i) => i.path.toLowerCase() === ev.select.toLowerCase()); if (it) showPreview(it); }
       });
       break;
     case "present": present(ev.title, ev.paths); break;
+    case "diagram": showDiagram(ev); break;
     case "refresh": refresh(ev.path); break;
     case "home": home(); break;
     case "back": back(); break;
-    case "close_preview": closePreview(); break;
+    case "close_preview": closeAllWindows(); break;
     case "toggle_camera": cycleCam(); break;
     case "toggle_hands": toggleHands(); break;
-    case "fullscreen": if (windowOpen()) setWindowMax(!galaxy.windowMaximized); else toggleFullscreen(); break;
+    case "fullscreen": if (windowOpen()) setWindowMax(!focusedMax()); else toggleFullscreen(); break;
   }
 }
 
@@ -409,25 +605,30 @@ function describeView() {
 const YES = /^(yes|yeah|yep|yup|sure|ok(ay)?|do it|go ahead|allow|approved?|confirm(ed)?|please do)\b/i;
 const NO = /^(no|nope|nah|don'?t|deny|cancel|stop|never ?mind|negative)\b/i;
 
-async function ask(text, { input = "text", selected } = {}) {
+async function ask(text, { input = "text", selected, silent = false } = {}) {
   text = String(text || "").trim();
   if (!text) return;
-  if (S.approvals.length) {
+  if (S.approvals.length && input !== "event") {
     const a = S.approvals[0];
     if (YES.test(text)) return answerApproval(a.id, true);
     if (NO.test(text)) return answerApproval(a.id, false);
   }
-  if (isStopPhrase(text)) return hush();
-  if (isRepeatPhrase(text)) return sayAgain();
+  if (input !== "event" && isStopPhrase(text)) return hush();
+  if (input !== "event" && isRepeatPhrase(text)) return sayAgain();
+  if (input !== "event") {
+    const cmd = matchCommand(text, { places: instantPlaces() });
+    if (cmd) return runInstant(cmd, text); // done on the spot, no round trip to the brain
+  }
   if (S.turn) await stopTurn();
   voice.stopSpeaking();
-  addMsg("user", text);
+  if (!silent) addMsg("user", text);
   setBusy(true);
   setState("thinking");
   S.botEl = null; S.caption = ""; S.progressBuf = ""; S.replyBuf = "";
   caption("");
-  const context = { view: describeView(), selected: selected || S.selected?.path || null, input, greeting: S.greetPending || undefined };
+  const context = { view: describeView(), selected: selected || (S.selected?.kind === "diagram" ? null : S.selected?.path) || null, input, greeting: S.greetPending || undefined, offer: S.offerPending || undefined, lang: input === "voice" ? voice.lastLang || undefined : undefined };
   S.greetPending = null;
+  S.offerPending = null;
   const turn = api.chat({ text, context }, onAgentEvent);
   S.turn = turn;
   try {
@@ -477,6 +678,173 @@ function sayAgain() {
   voice.flush();
 }
 
+// ---------------------------------------------------------------- the folder watcher's notices
+const NUMBER = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"];
+const KIND_NOUN = { image: "images", video: "videos", audio: "audio files", document: "documents", sheet: "spreadsheets", slides: "decks", code: "code files", data: "data files", archive: "archives", design: "design files", model3d: "3D files", font: "fonts", app: "programs", other: "files" };
+function watchNotice(n) {
+  let line;
+  if (n.type === "new_files") {
+    const count = n.count <= 20 ? NUMBER[n.count] : n.count.toLocaleString();
+    const what = KIND_NOUN[n.kind] || "files";
+    const where = n.folder.split(/[\\/]/).filter(Boolean).pop();
+    line = `${count[0].toUpperCase()}${count.slice(1)} new ${what} just landed in ${where}. ${["image", "video", "audio"].includes(n.kind) ? "Shall I sort them?" : "Want a look?"}`;
+  } else if (n.type === "disk_low") {
+    line = `Heads up: ${n.drive} is down to ${fmtBytes(n.free)} free. Shall I find what's taking the space?`;
+  } else return;
+  const el = addMsg("minion", line);
+  el.dataset.who = "WATCH";
+  if (n.folder) { el.style.cursor = "pointer"; el.onclick = () => openFolder(n.folder); }
+  S.offerPending = line; // so a plain "yes" means something
+  toast(line);
+  if (S.notes || S.busy || voice.speaking || voice.listening) return; // the log and the toast will do
+  caption(line, 6000);
+  voice.say(line);
+  S.lastReply = line;
+}
+
+// ---------------------------------------------------------------- reminders
+function chime() {
+  try {
+    const ac = new AudioContext(), t = ac.currentTime;
+    [[880, 0], [1318.5, 0.16]].forEach(([f, d]) => {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = "sine"; o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t + d); g.gain.exponentialRampToValueAtTime(0.08, t + d + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.6);
+      o.connect(g).connect(ac.destination); o.start(t + d); o.stop(t + d + 0.65);
+    });
+    setTimeout(() => ac.close().catch(() => {}), 1200);
+  } catch { /* no audio device */ }
+}
+function reminderDue(r, missed) {
+  const when = new Date(r.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const line = missed ? `You missed a reminder at ${when}: ${r.text}.` : `Reminder: ${r.text}.`;
+  chime();
+  const el = addMsg("minion", line);
+  el.dataset.who = missed ? "REMINDER \u00b7 MISSED" : "REMINDER";
+  toast(line);
+  if (S.notes) return; // mid-meeting: the chime and the toast are enough
+  setTimeout(() => { caption(line, 6000); voice.say(line); S.lastReply = line; }, 700);
+}
+
+// ---------------------------------------------------------------- meeting notes
+// Everything said is transcribed locally until "stop taking notes"; then D.E.N.N.I.S. writes it up.
+S.notes = null; // { title, started, entries: [{ at, text }] }
+async function startNotes(title = "", { quiet = false } = {}) {
+  if (S.notes) return reply("I'm already taking notes.");
+  if (S.turn && !quiet) await stopTurn();
+  S.notes = { title: String(title || "").trim(), started: Date.now(), entries: [] };
+  renderNotes();
+  if (!quiet) reply("Taking notes. Say \u201cstop taking notes\u201d when you're done.");
+  // start listening once he's finished saying so, or he'd minute himself
+  const t0 = performance.now();
+  const go = async () => {
+    if ((voice.speaking || S.busy) && performance.now() - t0 < 12000) return setTimeout(go, 200);
+    try { await handsFree.startNotes(); } catch (e) { toast(`Notes need the microphone: ${e.message || e}`, true); S.notes = null; renderNotes(); }
+  };
+  setTimeout(go, 400);
+}
+function addNote(text, at) {
+  if (!S.notes) return;
+  S.notes.entries.push({ at: at ? performance.timeOrigin + at : Date.now(), text });
+  renderNotes();
+}
+async function endNotes() {
+  const n = S.notes;
+  if (!n) return;
+  S.notes = null;
+  handsFree.endNotes();
+  renderNotes();
+  const mins = Math.max(1, Math.round((Date.now() - n.started) / 60000));
+  if (!n.entries.length) return reply("Notes stopped. Nothing was said, so there's nothing to write up.");
+  const stamp = (ms) => { const s = Math.max(0, Math.round((ms - n.started) / 1000)); return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`; };
+  const transcript = n.entries.map((e) => `[${stamp(e.at)}] ${e.text}`).join("\n");
+  let saved = "";
+  try { saved = (await api.notes(n.title || "Meeting", transcript)).path; } catch { /* the write-up still goes ahead */ }
+  addMsg("sys", `notes: ${mins} min, ${n.entries.length} lines${saved ? " - transcript kept in " + saved : ""}`);
+  const docs = S.config?.docSkills?.enabled !== false && (S.config?.provider || "anthropic") === "anthropic";
+  ask([
+    `I've just recorded a meeting${n.title ? ` ("${n.title}")` : ""}: ${mins} minute${mins === 1 ? "" : "s"}. The transcript is below${saved ? `; the raw version is kept at ${saved}` : ""}.`,
+    `Write up the notes: a short summary, the decisions made, action items (who, what, by when, where the transcript says), and open questions. Save them in my Documents folder, in a "Meeting Notes" folder, named with today's date and the meeting's subject - ${docs ? "as a Word document" : "as a Markdown file"}. Then tell me in a sentence or two what's in them.`,
+    "", "<transcript>", transcript, "</transcript>",
+  ].join("\n"), { input: "notes", silent: true });
+}
+function renderNotes() {
+  const w = $("#w-notes");
+  const n = S.notes;
+  w.classList.toggle("show", !!n);
+  if (!n) return;
+  const s = Math.round((Date.now() - n.started) / 1000);
+  w.querySelector("small").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} \u00b7 ${n.entries.reduce((a, e) => a + e.text.split(/\s+/).length, 0)} words`;
+  w.querySelector(".last").textContent = n.entries.slice(-2).map((e) => e.text).join(" ") || "listening...";
+}
+setInterval(() => { if (S.notes) renderNotes(); }, 1000);
+$("#notes-stop").onclick = () => endNotes();
+$("#notes-discard").onclick = () => { if (!S.notes) return; S.notes = null; handsFree.endNotes(); renderNotes(); toast("Notes discarded"); };
+
+// ---------------------------------------------------------------- instant commands and undo
+/** Folders "open X" can name: the mapped folders and whatever is on screen. */
+function instantPlaces() {
+  const roots = (S.config?.roots || []).map((r) => ({ name: r.label, path: r.path, isDir: true }));
+  const here = (S.level?.items || []).filter((i) => i.isDir && !i.more).map((i) => ({ name: i.name, path: i.path, isDir: true }));
+  return [...here, ...roots];
+}
+function reply(text) {
+  if (!text) return;
+  addMsg("bot", text);
+  caption(text, 3500);
+  voice.say(text);
+  S.lastReply = text;
+}
+async function runInstant(cmd, heard) {
+  addMsg("user", heard);
+  const now = new Date();
+  switch (cmd.action) {
+    case "home": home(); break;
+    case "back": back(); break;
+    case "open": openFolder(cmd.arg); break;
+    case "fullscreen": if (windowOpen()) setWindowMax(true); else if (!S.fullscreen) toggleFullscreen(); break;
+    case "exitFullscreen": if (focusedMax()) setWindowMax(false); else if (S.fullscreen) toggleFullscreen(); break;
+    case "compact": setCompact(true); break;
+    case "undo": return doUndo();
+    case "close": if (!windowOpen()) return reply("Nothing's open."); closePreview(); break;
+    case "closeAll": closeAllWindows(); break;
+    case "voiceOff": reply("Going quiet."); setTimeout(() => { voice.configure({ speak: false }); updateChips(); api.settings({ voice: { speak: false } }).catch(() => {}); }, 1200); return;
+    case "voiceOn": voice.configure({ speak: true }); updateChips(); api.settings({ voice: { speak: true } }).catch(() => {}); break;
+    case "handsOn": if (!tracker.running) toggleHands(); break;
+    case "handsOff": if (tracker.running) toggleHands(); break;
+    case "cameraOff": setCam("off"); break;
+    case "cameraOn": setCam("stage"); break;
+    case "time": return reply(`It's ${now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}.`);
+    case "date": return reply(`It's ${now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}.`);
+    case "settings": openSettings(); break;
+    case "capabilities": caps.open(); break;
+    case "rescan": api.reindex().catch(() => {}); break;
+    case "theme": {
+      const t = setTheme(cmd.arg === "next" ? nextTheme() : cmd.arg);
+      if (!cmd.ack) return reply(`${THEMES[t].label}.`);
+      break;
+    }
+    case "dndOn": case "dndOff": {
+      const dnd = cmd.action === "dndOn";
+      try { S.config = (await api.settings({ watch: { dnd } })).config; } catch (e) { return toast(e.message, true); }
+      break;
+    }
+    case "notesStart": return startNotes();
+    case "notesStop": if (!S.notes) return reply("I'm not taking notes."); return endNotes();
+    case "nextWindow": cycleWindows(1); break;
+    case "prevWindow": cycleWindows(-1); break;
+  }
+  reply(cmd.ack);
+}
+/** "Undo that" / Ctrl+Z: reverse the last change to your files, and show where things went. */
+async function doUndo() {
+  try {
+    const r = await api.undo(1);
+    reply(r.text);
+    for (const p of r.refresh || []) refresh(p);
+  } catch (e) { toast(e.message, true); }
+}
+
 function stopAll() {
   if (S.hf === "conversation") handsFree.endConversation("esc");
   voice.stopSpeaking();
@@ -507,7 +875,7 @@ function renderApproval() {
   m.querySelector("h3").textContent = a.title || "Allow this?";
   m.querySelector("pre").textContent = a.detail || "";
   m.classList.add("show");
-  voice.say(pick(SPOKEN_ASK[a.tool] || SPOKEN_ASK.default));
+  voice.say(a.minion ? `${a.minion} needs your go-ahead.` : pick(SPOKEN_ASK[a.tool] || SPOKEN_ASK.default));
 }
 function answerApproval(id, yes) {
   api.approve(id, yes).catch(() => {});
@@ -605,7 +973,7 @@ const handsFree = new HandsFree(voice, {
     voice.say(a);
     caption(a, 2500);
   },
-  onCommand: (text) => { caption(`"${text}"`); ask(text, { input: "voice" }); },
+  onCommand: (text) => { if (S.notes) return; caption(`"${text}"`); ask(text, { input: "voice" }); },
   onEnd: (reason) => {
     if (reason === "user") { const s = pick(SIGNOFFS); voice.say(s); caption(s, 3000); }
     else caption("Standing by. Say \u201cHey Dennis\u201d when you need me.", 4000);
@@ -614,6 +982,8 @@ const handsFree = new HandsFree(voice, {
   onStop: () => hush(),
   onRepeat: () => sayAgain(),
   onHeard: (t) => caption(`"${t}"`, 1500),
+  onNote: (text, at) => addNote(text, at),
+  onNotesEnd: () => endNotes(),
   onError: (e) => {
     reportVoice({ reason: `hands-free error: ${e?.name || ""} ${e?.message || e}` });
     toast(e?.name === "NotAllowedError" ? "Hands-free needs the microphone - allow it, then click STANDBY." : `Hands-free: ${e?.message || e}`, true);
@@ -877,11 +1247,61 @@ async function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {});
 }
 
+// ---------------------------------------------------------------- capabilities: skills, minions, connected apps, documents
+const caps = new Caps({
+  toast,
+  getConfig: () => S.config,
+  saveSettings: async (patch) => { try { S.config = (await api.settings(patch)).config; } catch (e) { toast(e.message, true); } },
+  showReport: (run) => { addMinionMsg(run); $("#log").classList.remove("hidden"); updateInsets(); caption(`${run.name}: ${(run.report || run.error || "").slice(0, 220)}`, 8000); },
+});
+$("#chip-caps").onclick = () => caps.open();
+$("#open-caps").onclick = () => { $("#settings").classList.remove("show"); caps.open(); };
+function addMinionMsg(run) {
+  const el = addMsg("minion", run.report || run.error || `(${run.status})`);
+  el.dataset.who = `${run.name} \u00b7 ${run.status === "done" ? "report" : run.status}`;
+  return el;
+}
+const BACK_LINES = (n) => [`${n} is back.`, `${n} has reported in.`, `${n} is back with the goods.`];
+let briefTimer = null;
+/** A minion came back: its report goes in the log, and he briefs you as soon as he's free. */
+function minionBack(run) {
+  addMinionMsg(run);
+  if (run.status === "recalled") return;
+  if (run.status === "failed") toast(`${run.name} hit a snag: ${run.error || "unknown error"}`, true);
+  if (S.config?.briefMinions === false || S.mock) { const l = pick(BACK_LINES(run.name)); caption(l, 3000); voice.say(l); return; }
+  clearTimeout(briefTimer);
+  const tryBrief = () => {
+    // not while he's answering, talking, listening to you, or waiting on a yes/no
+    if (S.busy || voice.speaking || voice.listening || S.approvals.length) { briefTimer = setTimeout(tryBrief, 1500); return; }
+    ask("A minion has reported back.", { input: "event", silent: true });
+  };
+  briefTimer = setTimeout(tryBrief, 700);
+}
+
 // ---------------------------------------------------------------- desktop shell: compact orb, fullscreen, reboot
 // window.dennisShell comes from the desktop app's preload; in a plain browser it's absent.
 const shell = window.dennisShell || null;
 const orbCh = new BroadcastChannel("dennis-orb"); // the compact orb mirrors his state and voice
-orbCh.onmessage = (e) => { if (e.data?.hello) orbCh.postMessage({ state: galaxy.state, level: galaxy.level }); };
+orbCh.onmessage = (e) => { if (e.data?.hello) orbCh.postMessage({ state: galaxy.state, level: galaxy.level, theme: S.theme }); };
+
+// ---------------------------------------------------------------- themes (themes.js): the look of the scene
+S.theme = "reactor";
+/** Switch the look; `save` remembers it for next time. Returns the theme's name. */
+function setTheme(name, { save = true } = {}) {
+  const t = galaxy.setTheme(themeName(name));
+  S.theme = t;
+  for (const k of THEME_ORDER) document.body.classList.toggle(`theme-${k}`, k === t);
+  $("#chip-theme").title = `Theme: ${THEMES[t].label} - ${THEMES[t].note} Click for the next one (T)`;
+  orbCh.postMessage({ theme: t });
+  if (save && (S.config?.visuals?.theme || "reactor") !== t) {
+    api.settings({ visuals: { theme: t } }).then((r) => { if (r?.config) S.config = r.config; }).catch(() => {});
+  }
+  return t;
+}
+const nextTheme = () => THEME_ORDER[(THEME_ORDER.indexOf(S.theme) + 1) % THEME_ORDER.length];
+$("#chip-theme").onclick = () => { const t = setTheme(nextTheme()); toast(`Theme: ${THEMES[t].label}`); };
+/** Settings previews the theme as you pick it; leaving without saving puts the saved one back. */
+const revertThemePreview = () => { const saved = themeName(S.config?.visuals?.theme); if (saved !== S.theme) setTheme(saved, { save: false }); };
 S.compact = false;
 S.fullscreen = false;
 function setCompact(on) {
@@ -985,7 +1405,7 @@ function updateChips() {
   v.textContent = voice.cfg.speak ? "VOICE ON" : "VOICE OFF";
   v.classList.toggle("off", !voice.cfg.speak);
   const w = $("#chip-wake");
-  w.textContent = { off: "HEY DENNIS OFF", starting: "MIC ...", standby: "STANDBY", conversation: "IN CONVERSATION" }[S.hf || "off"];
+  w.textContent = { off: "HEY DENNIS OFF", starting: "MIC ...", standby: "STANDBY", conversation: "IN CONVERSATION", notes: "TAKING NOTES" }[S.hf || "off"];
   w.classList.toggle("off", !S.hf || S.hf === "off");
   w.classList.toggle("live", S.hf === "conversation");
 }
@@ -1010,9 +1430,67 @@ $("#chip-settings").onclick = () => openSettings();
 
 // ---------------------------------------------------------------- settings
 let draftRoots = [];
+/** "claude-opus-5-5", or "ollama · <model>" for other brains. */
+function brainLabel(c) {
+  const p = c?.provider || "anthropic";
+  return p === "anthropic" ? c?.model || "claude" : `${p} · ${c?.brains?.[p]?.model || "no model set"}`;
+}
+
+// ---- the brain picker (Settings): Claude or any OpenAI-compatible model
+const BRAINS = {
+  anthropic: { placeholder: "claude-opus-5-5" },
+  openai: { url: "https://api.openai.com/v1", key: true, placeholder: "a model name from LIST MODELS" },
+  gemini: { url: "https://generativelanguage.googleapis.com/v1beta/openai", key: true, placeholder: "a model name from LIST MODELS" },
+  ollama: { url: "http://127.0.0.1:11434/v1", key: false, editUrl: true, placeholder: "a model you've pulled, e.g. from LIST MODELS" },
+  custom: { url: "", key: true, editUrl: true, placeholder: "the model name your server expects" },
+};
+let brainDraft = null; // { provider, model, brains } while Settings is open
+function brainFieldsOut(f) { // remember what's typed for the provider being shown
+  const p = brainDraft.shown;
+  if (!p) return;
+  if (p === "anthropic") brainDraft.model = f.model.value.trim();
+  else {
+    brainDraft.brains[p] = { ...(brainDraft.brains[p] || {}), model: f.model.value.trim() };
+    if (BRAINS[p].editUrl) brainDraft.brains[p].baseUrl = f.brainUrl.value.trim();
+    if (f.brainKey.value.trim()) brainDraft.keys[p] = f.brainKey.value.trim();
+  }
+}
+function showBrain(f, p) {
+  const c = S.config, b = BRAINS[p];
+  brainDraft.shown = p;
+  f.provider.value = p;
+  f.model.value = p === "anthropic" ? brainDraft.model || "claude-opus-5-5" : brainDraft.brains[p]?.model || "";
+  f.model.placeholder = b.placeholder;
+  f.brainUrl.value = b.editUrl ? brainDraft.brains[p]?.baseUrl || b.url : "";
+  f.brainKey.value = brainDraft.keys[p] || "";
+  $("#brain-key-state").textContent = c.brainKeys?.[p] ? "· SAVED" : "";
+  $(".brain-url").hidden = !b.editUrl;
+  $(".brain-key").hidden = !b.key;
+  $(".claude-key").hidden = p !== "anthropic";
+  $("#brain-list").hidden = p === "anthropic";
+  $("#brain-models").innerHTML = "";
+  const note = $("#brain-note");
+  note.hidden = p === "anthropic";
+  note.textContent = p === "anthropic" ? "" : `Pick a model that supports tool calling. Web search, document skills, the cloud sandbox and thinking notes need Claude, so they're off with this brain.${p === "ollama" ? " Ollama runs the model on this computer: install it, pull a model, then LIST MODELS." : ""}`;
+}
+$("#settings-form").provider.addEventListener("change", (e) => { const f = $("#settings-form"); brainFieldsOut(f); showBrain(f, e.target.value); });
+$("#brain-list").onclick = async () => {
+  const f = $("#settings-form");
+  const p = f.provider.value;
+  try {
+    const r = await fetch("/api/brains/models", { method: "POST", headers: { "Content-Type": "application/json", "X-Dennis": "1" }, body: JSON.stringify({ provider: p, baseUrl: f.brainUrl.value.trim() || BRAINS[p].url, apiKey: f.brainKey.value.trim() || undefined }) }).then((x) => x.json());
+    if (!r.ok) return toast(r.error || "Couldn't list the models", true);
+    $("#brain-models").innerHTML = r.models.map((m) => `<option value="${escapeHtml(m)}">`).join("");
+    toast(r.models.length ? `${r.models.length} models available - pick one in the Model field` : "That server lists no models");
+    f.model.focus();
+  } catch (e) { toast(e.message, true); }
+};
+
 function openSettings(first = false) {
   const c = S.config;
   const f = $("#settings-form");
+  brainDraft = { model: c.model || "claude-opus-5-5", brains: JSON.parse(JSON.stringify(c.brains || {})), keys: {}, shown: null };
+  showBrain(f, c.provider || "anthropic");
   $("#settings-title").textContent = first ? "SYSTEMS ONLINE" : "SETTINGS";
   $("#settings-intro").textContent = first
     ? "Good to meet you. I'm D.E.N.N.I.S. - Digital Entity Neural Network Intelligent System, your virtual production assistant. Tell me who you are, hand me a Claude API key so I can think, and choose which folders I may look after. The rest, I'll handle."
@@ -1023,7 +1501,6 @@ function openSettings(first = false) {
   f.apiKey.value = "";
   $("#key-state").textContent = c.hasApiKey ? "· SAVED" : "";
   $("#key-storage").textContent = c.keyStorage === "os" ? ", encrypted by your OS keychain" : c.keyStorage === "env" ? " (currently read from ANTHROPIC_API_KEY)" : "";
-  f.model.value = c.model || "claude-opus-5-5";
   f.effort.value = c.effort || "low";
   f.permissionMode.value = c.permissionMode || "ask";
   f.webSearch.checked = !!c.webSearch;
@@ -1034,6 +1511,14 @@ function openSettings(first = false) {
   f.elevenKey.value = "";
   $("#eleven-state").textContent = c.hasElevenKey ? "· SAVED" : "";
   f.sttModel.value = c.voice?.sttModel || "Xenova/whisper-base.en";
+  f.language.value = c.voice?.language || "en";
+  f.city.value = c.location?.query || c.location?.name || "";
+  f.briefOnBoot.checked = !!c.briefOnBoot;
+  f.theme.value = themeName(c.visuals?.theme);
+  f.theme.onchange = () => setTheme(f.theme.value, { save: false });
+  f.watchOn.checked = c.watch?.enabled !== false;
+  f.quietFrom.value = c.watch?.quiet?.from || "22:00";
+  f.quietTo.value = c.watch?.quiet?.to || "07:00";
   voice.microphones().then((mics) => {
     f.micId.innerHTML = `<option value="">system default</option>` + mics.map((m, i) => `<option value="${escapeHtml(m.deviceId)}">${escapeHtml(m.label || `microphone ${i + 1}`)}</option>`).join("");
     f.micId.value = c.voice?.micId || "";
@@ -1084,25 +1569,32 @@ function addRoot(p) {
 $("#root-add").onclick = () => addRoot($("#root-path").value);
 $("#root-path").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addRoot(e.target.value); } });
 $("#root-browse").onclick = async () => { const { path } = await api.pickFolder(); if (path) addRoot(path); };
-$("#settings-cancel").onclick = () => $("#settings").classList.remove("show");
+$("#settings-cancel").onclick = () => { $("#settings").classList.remove("show"); revertThemePreview(); };
 $("#open-memory").onclick = () => api.reveal((S.config.dataDir || "") + (S.config.dataDir?.includes("\\") ? "\\" : "/") + "memory.md").catch(() => toast("No memories saved yet"));
 $("#settings-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = e.target;
+  brainFieldsOut(f);
   const patch = {
-    userName: f.userName.value.trim(), address: f.address.value.trim(), personality: f.personality.value.trim(), model: f.model.value.trim() || "claude-opus-5-5",
+    userName: f.userName.value.trim(), address: f.address.value.trim(), personality: f.personality.value.trim(), model: brainDraft.model || "claude-opus-5-5",
+    provider: f.provider.value, brains: brainDraft.brains, city: f.city.value.trim(), briefOnBoot: f.briefOnBoot.checked,
+    watch: { enabled: f.watchOn.checked, quiet: { from: f.quietFrom.value || "22:00", to: f.quietTo.value || "07:00" } },
     effort: f.effort.value, permissionMode: f.permissionMode.value, webSearch: f.webSearch.checked, showHidden: f.showHidden.checked,
     roots: draftRoots,
-    voice: { speak: f.speak.checked, voiceName: f.voiceName.value, sttModel: f.sttModel.value, micId: f.micId.value, wakeWord: f.wakeWord.checked,
+    visuals: { theme: f.theme.value },
+    voice: { speak: f.speak.checked, voiceName: f.voiceName.value, sttModel: f.sttModel.value, language: f.language.value, micId: f.micId.value, wakeWord: f.wakeWord.checked,
       engine: f.engine.value, kokoroVoice: f.kokoroVoice.value, elevenVoice: f.elevenVoice.value.trim() || "onwK4e9ZLuTAKqWW03F9" },
     hands: { enabled: f.handsEnabled.checked, palmToTalk: f.palmToTalk.checked, cameraId: f.cameraId.value, mirror: f.mirrorCam.checked },
   };
   if (f.apiKey.value.trim()) patch.apiKey = f.apiKey.value.trim();
+  for (const [p, key] of Object.entries(brainDraft.keys)) patch[`${p}Key`] = key; // openaiKey, geminiKey, customKey
   if (f.elevenKey.value.trim()) patch.elevenKey = f.elevenKey.value.trim();
   try {
     const rootsChanged = JSON.stringify(patch.roots) !== JSON.stringify(S.config.roots);
     const prevHands = { ...(S.config.hands || {}) };
-    const { config } = await api.settings(patch);
+    const saved = await api.settings(patch);
+    if (saved.ok === false) return toast(saved.error || "Couldn't save those settings", true); // e.g. a city that can't be found
+    const { config } = saved;
     applyConfig(config);
     $("#settings").classList.remove("show");
     toast("Saved. New settings apply from the next message.");
@@ -1118,12 +1610,14 @@ $("#settings-form").addEventListener("submit", async (e) => {
 function applyConfig(c) {
   S.config = c;
   voice.configure({ speak: c.voice?.speak !== false, voiceName: c.voice?.voiceName || "", rate: c.voice?.rate || 0.96, pitch: c.voice?.pitch ?? 0.85, sttModel: c.voice?.sttModel || "Xenova/whisper-base.en", micId: c.voice?.micId || "",
-    engine: c.voice?.engine || "kokoro", kokoroVoice: c.voice?.kokoroVoice || "bm_daniel", elevenOk: !!c.hasElevenKey });
+    engine: c.voice?.engine || "kokoro", kokoroVoice: c.voice?.kokoroVoice || "bm_daniel", elevenOk: !!c.hasElevenKey,
+    language: c.voice?.language || "en", languages: c.voice?.languages || ["en", "ar", "tl", "fr", "ja", "zh"] });
   voice.elevenFailed = false;
   gestures.palmEnabled = c.hands?.palmToTalk !== false;
   gestures.mirror = c.hands?.mirror !== false;
   galaxy.setCameraFeed($("#cam"), S.cam, c.hands?.mirror !== false);
   document.body.classList.toggle("cam-unmirrored", c.hands?.mirror === false);
+  if (themeName(c.visuals?.theme) !== S.theme) setTheme(c.visuals?.theme, { save: false });
   updateChips();
 }
 
@@ -1131,12 +1625,13 @@ function lockUp() { $("#locked").classList.add("show"); }
 
 // ---------------------------------------------------------------- keyboard
 addEventListener("keydown", (e) => {
+  if (e.ctrlKey && e.key === "Tab") { e.preventDefault(); cycleWindows(e.shiftKey ? -1 : 1); return; } // switch file windows
   const typing = e.target.matches("input, textarea, select");
   const emptyAsk = e.target.id === "q" && !e.target.value;
   if (e.key === "Escape") {
-    if ($("#settings").classList.contains("show")) return $("#settings").classList.remove("show");
+    if ($("#settings").classList.contains("show")) { $("#settings").classList.remove("show"); return revertThemePreview(); }
     if (S.approvals.length) return answerApproval(S.approvals[0].id, false);
-    if (galaxy.windowMaximized) return setWindowMax(false);
+    if (focusedMax()) return setWindowMax(false);
     if (S.selected) closePreview();
     stopAll();
     if (typing) e.target.blur();
@@ -1145,6 +1640,7 @@ addEventListener("keydown", (e) => {
   if (e.code === "Space" && (!typing || emptyAsk)) { e.preventDefault(); if (!e.repeat) pressStart("space"); return; }
   if (typing) return;
   if (S.approvals.length && (e.key === "y" || e.key === "n")) return answerApproval(S.approvals[0].id, e.key === "y");
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); doUndo(); return; } // undo the last change to your files
   if (e.key === "Backspace") { e.preventDefault(); back(); }
   else if (e.key === "Home") home();
   else if (e.key === "/" || e.key === "Enter") { e.preventDefault(); $("#q").focus(); }
@@ -1152,7 +1648,8 @@ addEventListener("keydown", (e) => {
   else if (e.key === "h") toggleHands();
   else if (e.key === "?") $("#legend").classList.toggle("show");
   else if (e.key === "m") setCompact(!S.compact);
-  else if (e.key === "f") { if (windowOpen()) setWindowMax(!galaxy.windowMaximized); else toggleFullscreen(); }
+  else if (e.key === "t") { const t = setTheme(nextTheme()); toast(`Theme: ${THEMES[t].label}`); }
+  else if (e.key === "f") { if (windowOpen()) setWindowMax(!focusedMax()); else toggleFullscreen(); }
 });
 addEventListener("keyup", (e) => {
   if (e.code === "Space") pressEnd("space");
@@ -1277,7 +1774,7 @@ addEventListener("unhandledrejection", (e) => api.diag({ kind: "rejection", mess
 window.__dennis = {
   S, galaxy, gestures, voice, ask, navigate, home, back, present, activate, showPreview,
   summon: () => { if (!voice.listening) beginListen("summon", { auto: true }); },
-  compact: setCompact, reboot,
+  compact: setCompact, reboot, caps, setTheme, showDiagram,
   talk: { pressStart, pressEnd, endListen },
   handsFree,
   probe: runProbe,
@@ -1325,7 +1822,7 @@ function bootSequence(st) {
     const v = st.config.voice || {};
     const lines = [
       ["CORE", "ONLINE"],
-      ["BRAIN", st.mock ? "MOCK" : String(st.config.model || "claude").toUpperCase()],
+      ["BRAIN", st.mock ? "MOCK" : brainLabel(st.config).toUpperCase()],
       ["FILES", `${(st.index?.total || st.index?.scanned || 0).toLocaleString()} INDEXED`],
       ["VOICE", v.engine === "elevenlabs" ? "ELEVENLABS" : v.engine === "system" ? "SYSTEM" : `${String(v.kokoroVoice || "bm_daniel").replace("bm_", "").toUpperCase()} · LOCAL`],
       ["HANDS", st.config.hands?.enabled === false ? "STANDBY" : "TRACKING"],
@@ -1391,7 +1888,14 @@ function bootSequence(st) {
   setCam(st.config.hands?.camView || "stage");
   setState("idle");
   updateIndexChip(st.index);
-  api.events((ev) => { if (ev.type === "index") updateIndexChip(ev.status); });
+  api.events((ev) => {
+    if (ev.type === "index") updateIndexChip(ev.status);
+    else if (ev.type === "approval" && ev.runId) showApproval(ev); // a minion asking
+    else if (ev.type === "reminder") reminderDue(ev.reminder, ev.missed);
+    else if (ev.type === "watch") watchNotice(ev.notice);
+    else if (ev.type === "approval_done" && ev.runId) closeApproval(ev.id);
+    else { const back = caps.onEvent(ev); if (back) minionBack(back); }
+  });
   const booted = PROBE ? Promise.resolve() : bootSequence(st);
   await home();
   const name = st.config.userName;
@@ -1426,11 +1930,21 @@ function bootSequence(st) {
   ];
   const greet = `${pick(openers)} ${when} ${pick(SMALL_TALK)}`;
   S.greetPending = greet; // sent along with the first message, so "yes" to "want the NBA news?" makes sense
-  addMsg("sys", st.mock ? "mock brain - no Claude calls" : `brain: ${st.config.model}`);
+  addMsg("sys", st.mock ? "mock brain - no Claude calls" : `brain: ${brainLabel(st.config)}`);
   if (PROBE) { runProbe(); return; }
   await booted;
   if (!name || (!st.config.hasApiKey && !st.mock)) openSettings(true);
-  else { caption(greet, 9000); voice.feed(greet + " "); voice.flush(); S.lastReply = greet; }
+  else {
+    caption(greet, 9000); voice.feed(greet + " "); voice.flush(); S.lastReply = greet;
+    // the daily briefing, at the first start of the day (if asked for in Settings)
+    const day = new Date().toDateString();
+    let last = null; try { last = localStorage.getItem("dennis.briefed"); } catch { /* private mode */ }
+    if (st.config.briefOnBoot && last !== day && !st.mock) {
+      try { localStorage.setItem("dennis.briefed", day); } catch { /* fine */ }
+      const wait = () => (voice.speaking || S.busy ? setTimeout(wait, 400) : ask("Give me my briefing for today.", { input: "briefing", silent: true }));
+      setTimeout(wait, 1500);
+    }
+  }
   if (st.config.hands?.enabled !== false) startHands();
   if (st.config.voice?.wakeWord !== false && !SIM) setTimeout(startHandsFree, 1500);
   if (SIM) runSim();

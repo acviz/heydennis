@@ -13,6 +13,7 @@ const ch = new BroadcastChannel("dennis-orb");
 ch.onmessage = (e) => {
   const m = e.data || {};
   if (m.state) orb.setState(m.state);
+  if (m.theme) orb.setTheme(m.theme);
   if (typeof m.level === "number") orb.setLevel(m.level);
   if (m.pulse) orb.pulse();
 };

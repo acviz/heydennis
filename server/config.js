@@ -15,16 +15,32 @@ const DEFAULTS = {
   userName: "",
   address: "", // how D.E.N.N.I.S. addresses you ("sir", "boss", ...); empty = by name
   personality: "", // your own notes on his personality, added to the system prompt
-  model: DEFAULT_MODEL,
+  model: DEFAULT_MODEL, // the Claude model
+  provider: "anthropic", // the brain: anthropic | openai | gemini | ollama | custom (see brains.js)
+  brains: { openai: { model: "" }, gemini: { model: "" }, ollama: { model: "", baseUrl: "http://127.0.0.1:11434/v1" }, custom: { model: "", baseUrl: "" } },
   effort: "low", // low keeps spoken replies quick; raise for heavier file work
   webSearch: true,
   permissionMode: "ask", // "ask": confirm every change/launch; "auto": just do it
   roots: null, // [{ path, label }]; null = detect on first run
   showHidden: false,
   voice: { speak: true, voiceName: "", rate: 0.96, pitch: 0.85, stt: "whisper", sttModel: "Xenova/whisper-base.en", micId: "", wakeWord: true,
-    engine: "kokoro", kokoroVoice: "bm_daniel", elevenVoice: "onwK4e9ZLuTAKqWW03F9", elevenModel: "eleven_flash_v2_5" },
+    engine: "kokoro", kokoroVoice: "bm_daniel", elevenVoice: "onwK4e9ZLuTAKqWW03F9", elevenModel: "eleven_flash_v2_5",
+    language: "en", // "en" (English-only models) | "auto" (detect among `languages`) | one ISO code
+    languages: ["en", "ar", "tl", "fr", "ja", "zh"] },
   hands: { enabled: true, palmToTalk: true, showCamera: true, cameraId: "", mirror: true, camView: "stage" }, // camView: stage | pip | off
-  visuals: { bloom: true, autoRotate: true },
+  visuals: { bloom: true, autoRotate: true, theme: "reactor" }, // theme: reactor | spiral | neural | grid (ui/js/themes.js)
+  skillsDisabled: [], // ids of installed skills (~/.dennis/skills) that are switched off
+  mcpServers: {}, // MCP servers, same shape as Claude Desktop's: { name: { command, args, env } | { url, headers } }
+  docSkills: { enabled: true, skills: ["docx", "pptx", "xlsx", "pdf"] }, // Anthropic's document skills, in the cloud sandbox
+  minions: [ // worker agents D.E.N.N.I.S. can deploy (toolsets: files, write, web, skills, docs, mcp)
+    { name: "Scout", role: "A researcher. Digs up facts on the web and in the files, cross-checks them, and reports back with sources.", tools: ["web", "files", "skills"], effort: "medium" },
+    { name: "Archivist", role: "An organiser. Surveys folders, spots duplicates, clutter and naming problems, and proposes - or, if asked, carries out - a tidy structure.", tools: ["files", "write"], effort: "medium" },
+    { name: "Scribe", role: "A writer. Drafts documents, decks, spreadsheets and notes from the brief and the files it's pointed at, and saves them where it's told.", tools: ["files", "write", "docs", "skills"], effort: "medium" },
+  ],
+  briefMinions: true, // when a minion finishes, D.E.N.N.I.S. tells you about it straight away
+  location: null, // { query, name, lat, lon } for the weather in the daily briefing (set by "Your city")
+  briefOnBoot: false, // the daily briefing at the first start of each day
+  watch: { enabled: true, minFiles: 5, quiet: { from: "22:00", to: "07:00" }, dnd: false }, // the folder watcher's notices
   port: 47800,
 };
 
@@ -99,7 +115,8 @@ export class Config {
 
   /** Apply a partial update from the settings screen. Only known keys are accepted. */
   update(patch = {}) {
-    const allowed = ["userName", "address", "personality", "model", "effort", "webSearch", "permissionMode", "roots", "showHidden", "voice", "hands", "visuals"];
+    const allowed = ["userName", "address", "personality", "model", "effort", "webSearch", "permissionMode", "roots", "showHidden", "voice", "hands", "visuals",
+      "skillsDisabled", "mcpServers", "docSkills", "minions", "briefMinions", "provider", "brains", "location", "briefOnBoot", "watch"];
     for (const k of allowed) {
       if (!(k in patch)) continue;
       if (k === "roots") {
@@ -109,6 +126,24 @@ export class Config {
         this.data.roots = roots;
       } else if (k === "effort") {
         if (["low", "medium", "high", "xhigh", "max"].includes(patch.effort)) this.data.effort = patch.effort;
+      } else if (k === "skillsDisabled") {
+        this.data.skillsDisabled = (Array.isArray(patch.skillsDisabled) ? patch.skillsDisabled : []).map(String).slice(0, 500);
+      } else if (k === "mcpServers") {
+        // validated by mcp.js normalizeServers before it gets here; replaced whole so servers can be removed
+        if (patch.mcpServers && typeof patch.mcpServers === "object" && !Array.isArray(patch.mcpServers)) this.data.mcpServers = patch.mcpServers;
+      } else if (k === "minions") {
+        // validated by minions.js cleanDefinition before it gets here
+        if (Array.isArray(patch.minions)) this.data.minions = patch.minions.slice(0, 50);
+      } else if (k === "location") {
+        this.data.location = patch.location && typeof patch.location === "object" ? patch.location : null; // geocoded by the server
+      } else if (k === "provider") {
+        if (["anthropic", "openai", "gemini", "ollama", "custom"].includes(patch.provider)) this.data.provider = patch.provider;
+      } else if (k === "visuals") {
+        const v = patch.visuals && typeof patch.visuals === "object" ? { ...patch.visuals } : {};
+        if ("theme" in v && !["reactor", "spiral", "neural", "grid"].includes(v.theme)) delete v.theme;
+        this.data.visuals = deepMerge(this.data.visuals, v);
+      } else if (k === "briefMinions") {
+        this.data.briefMinions = !!patch.briefMinions;
       } else if (k === "permissionMode") {
         if (["ask", "auto"].includes(patch.permissionMode)) this.data.permissionMode = patch.permissionMode;
       } else if (typeof DEFAULTS[k] === "object" && DEFAULTS[k] !== null) {
@@ -119,6 +154,7 @@ export class Config {
     }
     if ("apiKey" in patch) this.setApiKey(patch.apiKey);
     if ("elevenKey" in patch) this.setSecret("elevenKey", patch.elevenKey);
+    for (const k of ["openaiKey", "geminiKey", "customKey"]) if (k in patch) this.setSecret(k, patch[k]); // other brains' keys
     this.save();
   }
 
@@ -157,7 +193,8 @@ export class Config {
 
   /** What the UI is allowed to see: everything except secrets. */
   publicView() {
-    const { token, apiKey, elevenKey, ...rest } = this.data;
-    return { ...rest, hasApiKey: this.hasCredentials(), hasElevenKey: !!this.getSecret("elevenKey"), keyStorage: apiKey?.scheme || (process.env.ANTHROPIC_API_KEY ? "env" : null), dataDir: DATA_DIR };
+    const { token, apiKey, elevenKey, openaiKey, geminiKey, customKey, ...rest } = this.data;
+    return { ...rest, hasApiKey: this.hasCredentials(), hasElevenKey: !!this.getSecret("elevenKey"),
+      brainKeys: { openai: !!this.getSecret("openaiKey"), gemini: !!this.getSecret("geminiKey"), custom: !!this.getSecret("customKey") }, keyStorage: apiKey?.scheme || (process.env.ANTHROPIC_API_KEY ? "env" : null), dataDir: DATA_DIR };
   }
 }

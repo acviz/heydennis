@@ -19,7 +19,8 @@
     "check": "node scripts/selftest.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.135.0"
+    "@anthropic-ai/sdk": "^0.135.0",
+    "@modelcontextprotocol/sdk": "^1.32.1"
   },
   "devDependencies": {
     "@huggingface/transformers": "^4.3.1",
@@ -27,6 +28,7 @@
     "electron": "^44.9.1",
     "electron-builder": "^26.15.3",
     "kokoro-js": "^1.2.1",
+    "mermaid": "^12.1.0",
     "three": "^0.186.1"
   },
   "build": {

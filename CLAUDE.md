@@ -8,12 +8,21 @@ Electron app + local Node server + browser UI. Claude (`claude-opus-5-5`, offici
 - `server/agent.js`: the streaming tool-use loop. The personality (Jarvis meets Sean Connery) is the `# Personality` block in `systemPrompt()`; the user's Settings → Personality tweaks text is appended there and takes priority. **History is append-only for a conversation.** Never edit earlier messages, the system prompt, or the tool list mid-conversation; per-message context goes in the new user message. Settings changes start a fresh conversation.
 - `server/tools.js`: every tool runs through `ctx.safe()` (paths.js root gate) and `validate()`. Approval-gated tools declare `approval`. There is deliberately no delete tool, nothing overwrites, and executables never launch.
 - `server/fsindex.js`: background crawl, search, and folder totals. `server/mock.js`: the no-key demo brain.
+- Capabilities (UI in `ui/js/caps.js`, the star icon):
+  - `server/skills.js`: SKILL.md skills in `~/.dennis/skills`. Their names and descriptions go into the system prompt; `use_skill` loads the full instructions. Skill scripts never run.
+  - `server/mcp.js`: `McpHub`, an MCP client over stdio and HTTP. Server tools become `mcp__<server>__<tool>`; anything not marked `readOnlyHint` needs approval. A change in connected tools starts a fresh conversation (`conv.mcpVersion`).
+  - `server/minions.js`: `MinionManager` runs worker agents in the background using `agent.callModel` / `runTool`, with scoped toolsets (`TOOLSETS` / `TOOLSET_OF` in tools.js). Their approvals and progress go to every window over `/api/events`. Finished reports are injected into Dennis's next user message as `<minion_report>`.
+  - Document skills: `docSkills` in the config adds the code-execution tool, `container.skills` and the `code-execution-2025-08-25` beta (`agent.params`). `save_generated_file` downloads sandbox output through the Files API. If the key can't use the sandbox, `callModel` turns document skills off and carries on.
+- Helpers: `server/brains.js` (OpenAI-compatible brains: GPT, Gemini, Ollama, custom; `callCompat` turns their stream into the same events as Claude's), `undo.js` (every create/move is recorded; undo moves things back or parks them in `~/.dennis/undone`, never deletes), `reminders.js`, `watcher.js` (folder watcher: batches of new files and low disk space, with cooldowns, quiet hours and DND), `office.js`.
+- UI round trip: `ctx.uiAsk(event)` (agent.js toolContext) emits a `ui` event with a `reply` id and waits for `POST /api/ui-reply`. `show_diagram` uses it: the window renders the Mermaid (`ui/js/diagram.js`, Mermaid vendored to `ui/vendor/mermaid/`), then answers with ok/error (and the PNG/SVG when saving).
+- `ui/js/themes.js`: the looks (reactor, spiral, neural, grid). Each scenery is procedural three.js (TSL shaders, instanced sprites, line segments), built when chosen and disposed when left. Never dispose a Sprite's geometry (three shares one across all sprites, the core's particles included) or the shared `tex.glow`. `galaxy.setTheme` crossfades; `THEMES[name].base` sets how much of the grid, stars, floor and dais shows. Keep sceneries dim, with no white glows: the core and windows must stay the brightest things.
 - `ui/js/galaxy.js` (three.js scene), `hands.js` (MediaPipe + gesture engine; thresholds in `TUNING`), `voice.js` + `stt-worker.js` (TTS + local Whisper, single-threaded on purpose), `app.js` (controller: one input model for mouse, hands and voice).
 
 ## Checks before calling a change done
 - `npm run check`: offline self-test (paths, validation, the agent loop against a fake Claude API, server auth).
 - UI: `npm run mock`, open the printed link; add `?probe=1` for the gesture battery (expect 10/10), `?sim=1` for synthetic hands.
 - Desktop: `DENNIS_SMOKE=shot.png npm start -- --mock` writes a screenshot and quits.
+- Themes and diagrams are visual: check them in the running app (screenshot every theme after a change, and watch the console for WebGPU validation errors).
 
 ## Environment quirks on the original dev PC (Windows, locked down)
 - PowerShell runs in constrained language mode, so `npm` through PowerShell breaks. Use Git Bash or `npm.cmd`.

@@ -88,9 +88,27 @@ A pinch only counts when your fingers actually touch. The tracker ignores tiny "
 
 ### Voice and keyboard
 
-`Space` tap and talk, or hold to talk · `Esc` stops everything · `Backspace` goes back · `Home` shows the overview · `/` to type · `C` cycles the camera view (full-screen stage / small window / off) · `H` turns hands on or off · `?` shows the gesture card · `F11` goes fullscreen · `M` switches to compact mode. **Ctrl+Shift+Space** (Cmd+Shift+Space on Mac) summons D.E.N.N.I.S. from anywhere and starts listening.
+`Space` tap and talk, or hold to talk · `Esc` stops everything · `Backspace` goes back · `Home` shows the overview · `/` to type · `C` cycles the camera view (full-screen stage / small window / off) · `H` turns hands on or off · `?` shows the gesture card · `F11` goes fullscreen · `M` switches to compact mode · `T` switches to the next theme · `Ctrl+Z` undoes his last change to your files. **Ctrl+Shift+Space** (Cmd+Shift+Space on Mac) summons D.E.N.N.I.S. from anywhere and starts listening.
 
 The mouse works everywhere: click, drag to spin, scroll to zoom, middle-drag to pan (a middle click re-centres the view), double-click a file to open it, and drag a file onto the core to ask about it.
+
+### File windows
+
+Opening a file puts it in a floating hologram window that grows out of its card. You can open several, up to eight.
+
+- **Move:** drag a window by its title bar and it stays where you drop it. Until then it follows its card.
+- **Resize:** drag the grip in the bottom-right corner.
+- **Switch:** with two or more windows open, a tab strip appears under the header. Click a tab, scroll the wheel over the strip, or press `Ctrl+Tab` (`Ctrl+Shift+Tab` to go back).
+- **Full screen:** `F` or the expand button. `Esc` brings it back, then closes the front window.
+- **Keep:** windows stay open when you change folders.
+
+### Languages
+
+Settings → **Languages you speak** sets this. Choose *Auto* for English, Arabic, Tagalog, French, Japanese and Chinese, or pick one language.
+
+- He detects which of your languages you're speaking, transcribes it on your computer, and replies in the same language.
+- Speech recognition runs on the graphics card when there is one: about a second per command with the base model, or about 2.5 s with *small*, which is more accurate for Arabic, Japanese, Chinese and Tagalog.
+- To hear replies in those languages in the same voice, use the ElevenLabs voice (Settings → Voice engine, plus an ElevenLabs key). Its fast multilingual model speaks all six. Without it, the local voice handles English, and replies in other languages are spoken by a matching Windows voice if one is installed, or shown on screen.
 
 ### Compact mode, fullscreen and reboot
 
@@ -112,8 +130,126 @@ You can also just ask: "go compact", "fullscreen", or "reboot yourself".
 - "Make a note: call the bank Tuesday."
 - "Move all the PDFs in Downloads into Documents/PDFs."
 - "Remember that my invoices live in Documents/Finance."
+- "Draw the signal flow from the media server to the LED wall."
+- "Look at my screen - what's this error?"
+- "Remind me at three to check the LED calibration."
+- "Take notes" at the start of a meeting, "stop taking notes" at the end.
+- "Switch to the neural theme."
+
+### Themes
+
+Four looks for the scene around the core. Switch with the orbit icon in the header, the `T` key, **Settings → Theme** (it previews as you pick), or by asking ("switch to the spiral theme", "next theme").
+
+- **Reactor**, the original: blueprint grid, arc-reactor rings, a quiet starfield.
+- **Spiral**: a tilted spiral galaxy, with long light trails orbiting a soft blue nucleus.
+- **Neural**: a glowing neuron, with fine filaments reaching out and sparks running along them.
+- **Grid**: cyberspace, with circuit traces and data walls and light pulses streaming into the core.
+
+Every theme is drawn live in the 3D scene; none of them play a video. The scenery speeds up while he thinks and swells when he talks. It's kept dim enough that the core and your file windows stay the brightest things on screen, and the HUD tints to match. Themes crossfade over about a second, and your choice is remembered.
+
+### Diagrams
+
+Ask for a picture and he draws one in a floating window: signal flow and wiring, camera-tracking setups, pipelines, shoot schedules, who-does-what. Examples: "draw how the LED processors connect to the wall", "show the tracking data path as a sequence diagram", "make a Gantt chart of next week's shoot".
+
+- He writes the diagram in [Mermaid](https://mermaid.js.org) and it lays itself out. Flowcharts, sequence diagrams, Gantt charts, timelines, mind maps and state diagrams all work, and the window styles them to match the HUD and theme.
+- If a diagram has a mistake, the window tells him what's wrong and he fixes it himself.
+- Each diagram window has **Save** (SVG and PNG into `~/.dennis/diagrams`, then shows you the file), **Copy Mermaid** (the source, to paste into docs, Notion or GitHub), full screen, and the usual move, resize and tabs.
+- "Save it to the project folder" puts a copy in your folders, after you approve. It can be undone like any other change.
+
+## Everyday helpers
+
+### Instant commands and undo
+
+Everyday commands happen the moment you finish speaking, with no thinking time: "go home", "back", "open Downloads", "full screen", "compact", "close it", "close all", "next window", "what time is it", "switch theme", "do not disturb".
+
+**Undo** works the same way. "Undo that", "put it back" or `Ctrl+Z` reverses his last change to your files, including changes his minions made. A moved or renamed file goes back where it was. A file or folder he created goes to `~/.dennis/undone`, because nothing is ever deleted.
+
+### Looking at your screen
+
+"Look at my screen", "what's this error?", "read me that render queue": he takes a screenshot (his own window steps aside first) and reads it. This only happens when you ask, and the screen flashes so you know. "Look at both screens" captures every display.
+
+### Meeting notes
+
+Say "take notes" and he transcribes the room on your computer until you say "stop taking notes". He stays silent meanwhile. Afterwards he writes up the decisions, action items and owners. The raw transcript is kept in `~/.dennis/notes`.
+
+### Reminders and the daily briefing
+
+- "Remind me at three to check the LED calibration", "every weekday at 9, remind me to back up the cards". Reminders chime and speak when they're due, and ones that came due while he was closed are announced as missed.
+- **Brief me** gives today's reminders, what changed in your folders since yesterday, disk space, minion news and the weather (set your city in Settings). Tick *Brief me at the first start each day* to get it automatically.
+
+### The folder watcher
+
+He keeps an eye on your mapped folders and speaks up once when it matters. If a batch of new files lands (a night's renders, a card dump, a delivery), he says something like "Twelve new videos just landed in Renders. Shall I sort them?". He also warns when a drive is running low.
+
+Downloads still in progress, temp files, and Unreal and other cache folders are ignored. There's a cooldown per folder, quiet hours (Settings, 22:00 to 07:00 by default) and a do-not-disturb switch: "do not disturb" / "you can disturb me again".
+
+### What's taking the space
+
+"What's eating my disk space?" gives a storage report:
+
+- free space on each drive
+- the biggest folders and files
+- likely duplicate files
+- caches that are safe to clear, such as Unreal's DerivedDataCache, Intermediate and Saved, DaVinci's render cache, Adobe's media cache, and proxies
+
+He never deletes anything. To free space he offers to move things into a "To review" folder, which can be undone.
+
+### Other brains: GPT, Gemini, Ollama
+
+Claude is the default and recommended brain. **Settings → Brain** can swap in OpenAI (GPT), Google Gemini, a local open-source model through [Ollama](https://ollama.com), or any OpenAI-compatible server.
+
+- He keeps his personality and all his file tools on any brain.
+- Claude-only extras, such as the document skills, the cloud sandbox and Claude's web search, switch off on the others.
+- Each brain's key is stored like the Claude key. **List models** (next to Model) shows what that brain offers.
 
 ---
+
+## Capabilities: skills, minions, connected apps, documents
+
+The star icon in the header (or **Settings → Capabilities**) opens the panel for everything below.
+
+### Skills
+
+A skill is packaged know-how for one kind of job: a folder holding a `SKILL.md` (a short `name` and `description` in its frontmatter, then the instructions), plus any reference files such as templates or checklists. It's the same format as Claude's Agent Skills, so skills written for Claude work here too.
+
+- **Install** a folder, a `.zip`, or a lone `SKILL.md` from the Skills tab, or drop folders into `~/.dennis/skills`. Reinstalling a skill updates it.
+- D.E.N.N.I.S. sees every skill's name and description, and reads a skill's full instructions only when a request needs them. Having many installed costs little.
+- **Teach him:** "save that as a skill" writes a new skill from what you just showed him, once you approve it.
+- Switch a skill off without removing it. Removed skills move to `~/.dennis/skills-removed`, so they can be restored.
+- Scripts inside a skill are never run on your computer. He follows the instructions with his own tools.
+
+### Minions
+
+Minions are worker agents he sends off on tasks while he carries on with you. Several can work at once.
+
+- **Built in:** Scout (research on the web and in your files), Archivist (surveys and tidies folders) and Scribe (drafts documents, decks and sheets). Make more in the Minions tab, or just ask: "create a minion called Gaffer that checks DMX patch sheets".
+- **Deploy one:** "send Scout to find LED processors that do 7680 Hz", "have Archivist survey Downloads for duplicates". The MINIONS widget (top left) shows who's out and what each one is doing. Click one to read its report.
+- **Same rules as Dennis.** Minions use only the toolsets you gave them (files, write, web, skills, docs, mcp). Anything that changes your files still asks you first, with the minion's name in the dialog. They can't drive the interface, touch his memory, or send minions of their own.
+- **When one finishes,** its report goes in the Comms log, and he briefs you in a sentence or two as soon as he's free. Turn that off in the Minions tab if you'd rather ask.
+
+### Connected apps (MCP)
+
+MCP servers let other apps lend D.E.N.N.I.S. their tools, for example Blender, Unreal, Slack or Google Drive. Add them in the Connected Apps tab using the same format as Claude Desktop's `claude_desktop_config.json`:
+
+```json
+{ "mcpServers": {
+    "blender": { "command": "uvx", "args": ["blender-mcp"] },
+    "remote":  { "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer ..." } }
+} }
+```
+
+- **Import from Claude Desktop** copies in the servers you already use there, for you to review before saving.
+- Each server's status and tools are shown live. Tools the server marks read-only run straight away; everything else asks you first.
+- Local servers run as programs on your computer, so only add ones you trust. Keys in this config are stored as plain text in your data folder, as Claude Desktop does. Each server's error output goes to `~/.dennis/logs/mcp-<name>.log`.
+
+### Documents
+
+With document skills on (the Documents tab), he can make real Word, PowerPoint, Excel and PDF files using Anthropic's document skills: "make a one-page call sheet for tomorrow as a Word doc", "turn this shot list into a deck".
+
+- He builds each file in Anthropic's cloud sandbox and saves it into your folders once you approve.
+- The sandbox can't see your files; he reads what's needed and brings it in.
+- Sandbox time is billed with your Claude API usage.
+- If your API key can't use the sandbox, he switches document skills off by himself and says so.
 
 ## Safety and privacy
 
@@ -123,9 +259,10 @@ You can also just ask: "go compact", "fullscreen", or "reboot yourself".
 - **You approve changes.** In the default "ask me first" mode, every open, create and move shows a confirmation. Answer it with a click, a pinch, or by saying "yes" or "no".
 - **Camera and microphone stay local.** Hand tracking (MediaPipe) and speech recognition (Whisper) run on your machine. The page's Content-Security-Policy also blocks MediaPipe's built-in usage telemetry. What goes to Claude is your messages plus whatever files it reads to answer you.
 - **Instructions inside files are treated as data.** The prompt tells Claude never to follow them.
+- **Your screen is only captured when you ask** ("look at my screen"), and the screen flashes when it happens.
 - **The local server is locked down.** It listens on `127.0.0.1` only, rejects foreign `Host` headers, and requires a session cookie (HttpOnly, SameSite=Strict) plus a custom header for any change, so other websites can't drive it.
 
-Your data lives in `~/.dennis/`: `config.json` (settings), `memory.md` (what it remembers, which you can edit), and an index cache. Reinstalling or updating the app never touches it.
+Your data lives in `~/.dennis/`: `config.json` (settings), `memory.md` (what it remembers, which you can edit), `reminders.json`, `notes/` (meeting transcripts), `diagrams/` (saved diagrams), `undone/` (whatever undo took away), and an index cache. Reinstalling or updating the app never touches it.
 
 ---
 
@@ -147,7 +284,7 @@ Your data lives in `~/.dennis/`: `config.json` (settings), `memory.md` (what it 
            Claude (claude-opus-5-5)
 ```
 
-- **Brain:** `claude-opus-5-5` through the official Anthropic SDK. It uses adaptive thinking with short progress notes between tool calls, server-side refusal fallback (`fallbacks: "default"`), prompt caching, optional web search, and an append-only conversation history so caching and thinking stay valid. Effort defaults to **low** so spoken replies come back quickly; raise it in Settings for heavy file work.
+- **Brain:** `claude-opus-5-5` through the official Anthropic SDK (other brains go through `server/brains.js`, an OpenAI-compatible adapter). It uses adaptive thinking with short progress notes between tool calls, server-side refusal fallback (`fallbacks: "default"`), prompt caching, optional web search, and an append-only conversation history so caching and thinking stay valid. Effort defaults to **low** so spoken replies come back quickly; raise it in Settings for heavy file work.
 - **Hands:** `ui/js/hands.js`. It adapts the field-tuned techniques from [holo-gestures](https://github.com/zubair-trabzada/holo-gestures): pinch hysteresis with an earn gate, One Euro smoothing, identity-stable hand slots, ghost-hand dedupe, and held poses instead of fragile motion gestures.
 - **Full-stack idea:** the memory, voice, face and hands split comes from [fullstack-agent](https://github.com/jaredrhod/fullstack-agent). Here the four parts ship as one installable app with Claude called directly, instead of a Claude Code setup wizard.
 

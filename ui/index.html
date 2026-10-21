@@ -30,6 +30,8 @@
       <button class="chip" id="chip-cam" title="Camera view (C)">CAM</button>
       <button class="chip" id="chip-wake" title="Hands-free: say &quot;Hey Dennis&quot; to start, &quot;that's all&quot; to finish">HEY DENNIS</button>
       <button class="chip" id="chip-voice" title="Speak replies">VOICE</button>
+      <button class="chip icon" id="chip-caps" title="Capabilities: skills, minions, connected apps, documents"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.6l1.6 3.6 3.8.4-2.9 2.6.9 3.8L8 10.1 4.6 12l.9-3.8-2.9-2.6 3.8-.4z"/></svg></button>
+      <button class="chip icon" id="chip-theme" title="Theme (T)"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><ellipse cx="8" cy="8" rx="6.6" ry="2.6" transform="rotate(-24 8 8)"/></svg></button>
       <button class="chip icon" id="chip-compact" title="Compact mode: just the core, floating on your desktop (M)"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.6"/><path d="M2 2l3 3M14 2l-3 3M2 14l3-3M14 14l-3-3"/></svg></button>
       <button class="chip icon" id="chip-full" title="Fullscreen (F11)"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 6V2h4M10 2h4v4M2 10v4h4M14 10v4h-4"/></svg></button>
       <button class="chip icon" id="chip-reboot" title="Reboot D.E.N.N.I.S. (tap twice)"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.2 8.6A5.2 5.2 0 1 1 11.6 4.3"/><path d="M12.2 1.8v3h-3"/></svg></button>
@@ -41,6 +43,8 @@
   <!-- HUD instruments -->
   <section id="w-activity" class="widget"><h5>ACTIVITY <small>30D</small><em>UPD</em></h5><div class="big">--</div><div class="sub">files changed this week</div><canvas></canvas></section>
   <section id="w-wave" class="widget"><h5>AUDIO <small>IDLE</small></h5><canvas></canvas></section>
+  <section id="w-notes" class="widget"><h5><i class="rec"></i>NOTES <small></small></h5><div class="last"></div><div class="row"><button type="button" id="notes-stop">STOP &amp; WRITE UP</button><button type="button" id="notes-discard">DISCARD</button></div></section>
+  <section id="w-minions" class="widget"><h5>MINIONS <small></small></h5><div class="list"></div></section>
   <section id="w-readout" class="widget"><div class="ringlabel"><b id="ro-time">--</b>LOCAL <i>TIME</i></div><div class="ringlabel"><b id="ro-files">--</b>FILES <i>INDEXED</i></div></section>
   <div id="scan"></div>
 
@@ -48,7 +52,7 @@
   <div id="tip" class="glass"></div>
 
   <!-- file preview, left -->
-  <aside id="preview">
+  <template id="fwin-tpl"><aside class="fwin">
     <div class="phead">
       <span class="kdot"></span>
       <div class="ptitle"><b></b><small></small></div>
@@ -61,7 +65,9 @@
       <button data-act="open">OPEN</button>
       <button data-act="reveal">SHOW IN FOLDER</button>
     </div>
-  </aside>
+    <i class="rz" title="Drag to resize"></i>
+  </aside></template>
+  <nav id="wintabs" aria-label="Open windows"></nav>
 
   <!-- conversation log, right -->
   <aside id="log" class="glass panel">
@@ -100,8 +106,10 @@
     <div><b>Drag</b> spin &middot; <b>Wheel</b> zoom &middot; <b>Middle-drag</b> pan &middot; <b>Middle-click</b> re-centre &middot; drag a file onto the core to ask about it</div>
     <h4>KEYS</h4>
     <div><b>Space</b> tap and talk (sends when you stop) or hold to talk &middot; <b>Esc</b> stop &middot; <b>Backspace</b> back &middot; <b>Home</b> overview</div>
-    <div><b>F11</b> fullscreen &middot; <b>M</b> compact mode (just the core, on your desktop: drag it anywhere, click to come back, right-click for options)</div>
-    <div><b>F</b> expand an open file window to full screen &middot; <b>C</b> camera view &middot; <b>H</b> hands on/off &middot; <b>/</b> type &middot; <b>?</b> this card</div>
+    <div><b>Instant</b> "go home", "back", "open Downloads", "full screen", "compact", "close it", "undo that", "what time is it" happen at once, no thinking needed &middot; <b>Ctrl+Z</b> undoes his last change to your files</div>
+    <div><b>&#9733;</b> capabilities: skills, minions, connected apps, documents &middot; <b>F11</b> fullscreen &middot; <b>M</b> compact mode (just the core, on your desktop: drag it anywhere, click to come back, right-click for options)</div>
+    <div><b>File windows</b> drag the title bar to move &middot; drag the corner to resize &middot; open several and switch with the tabs, the wheel over them, or <b>Ctrl+Tab</b></div>
+    <div><b>F</b> expand the front file window to full screen &middot; <b>C</b> camera view &middot; <b>H</b> hands on/off &middot; <b>T</b> next theme (Reactor, Spiral, Neural, Grid) &middot; <b>/</b> type &middot; <b>?</b> this card</div>
   </div>
 
   <!-- approval -->
@@ -128,10 +136,22 @@
         <label class="span2">Personality tweaks
           <textarea name="personality" rows="2" maxlength="2000" placeholder="optional - e.g. more sarcasm, fewer Scottish words, call me Captain"></textarea>
           <small>Out of the box: Jarvis meets Sean Connery - dry wit, a little sarcasm, very sophisticated. Notes here take priority.</small></label>
-        <label class="span2">Claude API key <span id="key-state"></span>
+        <label>Brain
+          <select name="provider">
+            <option value="anthropic">Claude (Anthropic) - recommended</option>
+            <option value="openai">OpenAI (GPT)</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="ollama">Ollama (local, open source)</option>
+            <option value="custom">Other OpenAI-compatible server</option>
+          </select></label>
+        <label>Model <span class="lbl-act"><button type="button" id="brain-list" hidden>LIST MODELS</button></span>
+          <input name="model" list="brain-models" placeholder="claude-opus-5-5"><datalist id="brain-models"></datalist></label>
+        <label class="span2 brain-url" hidden>Server address<input name="brainUrl" placeholder="http://127.0.0.1:11434/v1"></label>
+        <label class="span2 brain-key" hidden>API key for this brain <span id="brain-key-state"></span><input name="brainKey" type="password" placeholder="leave blank to keep the current key"></label>
+        <small class="span2" id="brain-note" hidden></small>
+        <label class="span2 claude-key">Claude API key <span id="key-state"></span>
           <input name="apiKey" type="password" placeholder="sk-ant-...  (leave blank to keep the current key)">
           <small>Get one at console.anthropic.com. Stored on this computer only<span id="key-storage"></span>.</small></label>
-        <label>Model<input name="model" placeholder="claude-opus-5-5"></label>
         <label>Thinking effort
           <select name="effort"><option value="low">low - quickest replies</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">extra high</option><option value="max">max - slowest, most thorough</option></select></label>
         <label>Changes &amp; launches
@@ -149,8 +169,16 @@
         <label>ElevenLabs key <span id="eleven-state"></span><input name="elevenKey" type="password" placeholder="optional - leave blank to keep the current key"></label>
         <label>ElevenLabs voice ID<input name="elevenVoice" placeholder="onwK4e9ZLuTAKqWW03F9 (Daniel)"></label>
         <label>System voice<select name="voiceName"><option value="">automatic</option></select></label>
+        <label>Languages you speak
+          <select name="language">
+            <option value="en">English only</option>
+            <option value="auto">Auto: English, Arabic, Tagalog, French, Japanese, Chinese</option>
+            <option value="ar">Arabic</option><option value="tl">Tagalog</option><option value="fr">French</option><option value="ja">Japanese</option><option value="zh">Chinese</option>
+          </select>
+          <small>He replies in the language you use. Beyond English, speaking needs the ElevenLabs voice (or a system voice for that language).</small></label>
         <label>Speech recognition
-          <select name="sttModel"><option value="Xenova/whisper-tiny.en">Whisper tiny (fastest, ~40 MB)</option><option value="Xenova/whisper-base.en">Whisper base (balanced, ~80 MB)</option><option value="Xenova/whisper-small.en">Whisper small (most accurate, ~250 MB)</option></select></label>
+          <select name="sttModel"><option value="Xenova/whisper-tiny.en">Whisper tiny (fastest, ~40 MB)</option><option value="Xenova/whisper-base.en">Whisper base (balanced, ~80 MB)</option><option value="Xenova/whisper-small.en">Whisper small (most accurate, ~250 MB; best for Arabic, Japanese, Chinese, Tagalog)</option></select>
+          <small>With more than English, the multilingual version of the same model is used.</small></label>
         <label>Microphone<select name="micId"><option value="">system default</option></select></label>
         <label class="check"><input type="checkbox" name="handsEnabled"> Hand tracking (webcam)</label>
         <label>Camera<select name="cameraId"><option value="">automatic (prefers Camo / iPad)</option></select></label>
@@ -158,8 +186,16 @@
         <label class="check"><input type="checkbox" name="palmToTalk"> Open palm = talk</label>
         <label class="check"><input type="checkbox" name="wakeWord"> Hands-free: "Hey Dennis" wakes him, "that's all" ends</label>
         <label class="check"><input type="checkbox" name="showHidden"> Show hidden files</label>
+        <label>Theme
+          <select name="theme"><option value="reactor">Reactor - the original arc-reactor look</option><option value="spiral">Spiral - a galaxy of light trails</option><option value="neural">Neural - filaments and sparks</option><option value="grid">Grid - cyberspace circuits and data</option></select>
+          <small>Previews as you pick. Also: the orbit chip top right, the T key, or "switch to the spiral theme".</small></label>
+        <label>Your city (for the weather in briefings)<input name="city" placeholder="e.g. London, UK"></label>
+        <label class="check"><input type="checkbox" name="briefOnBoot"> Brief me at the first start each day</label>
+        <label class="check"><input type="checkbox" name="watchOn"> Watch my folders: mention new batches of files and low disk space</label>
+        <label>Quiet hours (no notices)<span class="pair"><input name="quietFrom" type="time" value="22:00"> to <input name="quietTo" type="time" value="07:00"></span></label>
       </div>
       <div class="row end">
+        <button type="button" id="open-caps">CAPABILITIES</button>
         <button type="button" id="open-memory">MEMORY FILE</button>
         <button type="button" id="settings-cancel">CANCEL</button>
         <button type="submit" class="yes">SAVE</button>
@@ -168,6 +204,58 @@
     </form>
   </div>
 
+  <div id="caps" class="modal">
+    <div class="glass box wide caps">
+      <h2>CAPABILITIES</h2>
+      <nav class="tabs"><button type="button" data-tab="skills">SKILLS</button><button type="button" data-tab="minions">MINIONS</button><button type="button" data-tab="mcp">CONNECTED APPS</button><button type="button" data-tab="docs">DOCUMENTS</button></nav>
+
+      <section data-pane="skills">
+        <p class="hint">Packaged know-how in the same SKILL.md format as Claude's skills: a folder with instructions and any reference files. D.E.N.N.I.S. sees each skill's description and reads the full instructions only when a request needs it. Scripts inside a skill are never run on this computer.</p>
+        <div id="skill-list" class="list"></div>
+        <div class="row"><button type="button" id="skill-folder">INSTALL A FOLDER...</button><button type="button" id="skill-zip">INSTALL A .ZIP OR SKILL.MD...</button><button type="button" id="skill-open">OPEN SKILLS FOLDER</button></div>
+        <div class="addroot"><input id="skill-path" placeholder="...or paste a path to a skill folder, .zip or SKILL.md"><button type="button" id="skill-path-add">INSTALL</button></div>
+        <small>Skills live in <span id="skill-dir"></span>. You can also just say "save that as a skill".</small>
+      </section>
+
+      <section data-pane="minions" hidden>
+        <p class="hint">Worker agents D.E.N.N.I.S. sends off on tasks while he carries on with you; several can work at once. They follow the same rules he does: anything that changes your files still waits for your yes. Try "send Scout to research LED processors" or "have Archivist survey my Downloads".</p>
+        <div id="minion-defs" class="list"></div>
+        <details id="minion-form"><summary>NEW MINION</summary>
+          <div class="grid">
+            <label>Name<input id="minion-name" maxlength="32" placeholder="e.g. Gaffer"></label>
+            <label>Effort<select id="minion-effort"><option value="low">low - quick</option><option value="medium" selected>medium</option><option value="high">high - thorough</option></select></label>
+            <label class="span2">Role<textarea id="minion-role" rows="2" maxlength="2000" placeholder="What it's for and how it should work, e.g. A lighting specialist: checks fixture lists and DMX patch sheets for clashes."></textarea></label>
+            <div class="span2"><div class="lbl">May use</div><div id="minion-tools" class="checks"></div></div>
+          </div>
+          <div class="row end"><button type="button" id="minion-save" class="yes">SAVE MINION</button></div>
+        </details>
+        <label class="check"><input type="checkbox" id="brief-minions"> Brief me as soon as a minion reports back</label>
+        <div class="lbl">Recent work</div>
+        <div id="minion-runs" class="list"></div>
+      </section>
+
+      <section data-pane="mcp" hidden>
+        <p class="hint">Connect MCP servers so D.E.N.N.I.S. can use other apps' tools: Blender, Unreal, Slack, Google Drive and more. Same format as Claude Desktop's config. Anything not marked read-only asks you first.</p>
+        <div id="mcp-status" class="list"></div>
+        <textarea id="mcp-json" rows="10" spellcheck="false" placeholder='{ "mcpServers": { "blender": { "command": "uvx", "args": ["blender-mcp"] } } }'></textarea>
+        <div class="row"><button type="button" id="mcp-import">IMPORT FROM CLAUDE DESKTOP</button><button type="button" id="mcp-reconnect">RECONNECT</button><button type="button" id="mcp-save" class="yes">SAVE &amp; CONNECT</button></div>
+        <small>Local servers run as programs on this computer: only add ones you trust. Keys and tokens in this config are stored in your data folder as plain text, as in Claude Desktop. Server logs go to the logs folder there.</small>
+      </section>
+
+      <section data-pane="docs" hidden>
+        <label class="check"><input type="checkbox" id="docs-on"> Let D.E.N.N.I.S. make documents with Anthropic's document skills</label>
+        <div class="checks">
+          <label class="check"><input type="checkbox" name="docSkill" value="docx"> Word</label>
+          <label class="check"><input type="checkbox" name="docSkill" value="pptx"> PowerPoint</label>
+          <label class="check"><input type="checkbox" name="docSkill" value="xlsx"> Excel</label>
+          <label class="check"><input type="checkbox" name="docSkill" value="pdf"> PDF</label>
+        </div>
+        <p class="hint">He builds the file in Anthropic's cloud sandbox, then saves it into your folders once you approve. The sandbox can't see your files; he brings in what's needed. Sandbox time is billed with your Claude API usage. Try "make a one-page call sheet for tomorrow as a Word doc" or "turn this shot list into a PowerPoint".</p>
+      </section>
+
+      <div class="row end"><button type="button" id="caps-close" class="yes">DONE</button></div>
+    </div>
+  </div>
   <div id="boot"><div class="b-title"></div><div class="b-sub">DIGITAL ENTITY NEURAL NETWORK INTELLIGENT SYSTEM</div><div class="b-tag">YOUR VIRTUAL PRODUCTION ASSISTANT</div><div class="b-log"></div><div class="b-bar"><div class="b-track"><div class="b-fill"></div></div><span class="b-pct">0%</span><span class="b-what">INITIALIZING</span></div></div>
   <div id="toast"></div>
   <div id="locked" class="modal"><div class="glass box"><h3>D.E.N.N.I.S. IS LOCKED</h3><p>Open it from the app, or use the private link printed in the terminal when the server started.</p></div></div>

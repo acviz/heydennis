@@ -81,6 +81,16 @@ function cmdNorm(text) {
   return words.filter((w, i) => w !== words[i - 1]).join(" ");
 }
 
+const NOTES_END_RE = whole([
+  "stop (taking )?(the )?notes", "end (the )?notes", "(that's|that is) (the )?end of (the )?meeting", "end of (the )?meeting", "the meeting is over",
+  "stop recording( the meeting)?", "notes off", "(we're|we are) done( taking notes)?", "finish (the )?notes",
+]);
+/** "Stop taking notes", "That's the end of the meeting". */
+export function isNotesEnd(text) {
+  const t = cmdNorm(text);
+  return !!t && NOTES_END_RE.test(t);
+}
+
 /** A short interruption: "Stop", "Dennis, wait", "Shut up", "Put a sock in it". */
 export function isStopPhrase(text) {
   const t = cmdNorm(text);
@@ -97,7 +107,8 @@ export class HandsFree {
   /**
    * voice: the Voice instance (shared mic + Whisper worker)
    * hooks: isBusy(), isSpeaking(), onState(state), onWake(command), onCommand(text),
-   *        onEnd(reason), onStop(), onRepeat(), onHeard(text), onError(err)
+   *        onEnd(reason), onStop(), onRepeat(), onHeard(text), onError(err),
+   *        onNote(text, at), onNotesEnd()   (meeting notes: everything said is transcribed, nothing is answered)
    */
   constructor(voice, hooks) {
     this.voice = voice;
@@ -163,6 +174,18 @@ export class HandsFree {
   }
 
   /** Any interaction (push-to-talk, typing) opens a conversation; standby can be resumed by voice later. */
+  /** Meeting notes: every utterance is transcribed and handed to onNote until "stop taking notes". */
+  async startNotes() {
+    this.notesFrom = this.state === "off" || this.state === "starting" ? "off" : "standby";
+    if (this.state === "off") await this.start();
+    this.setState("notes");
+  }
+  endNotes() {
+    if (this.state !== "notes") return;
+    const back = this.notesFrom || "standby";
+    if (back === "off") this.stop(); else this.setState("standby");
+  }
+
   enterConversation() { if (this.state === "standby") this.setState("conversation"); else if (this.state === "conversation") this.lastUtterance = performance.now(); }
   endConversation(reason = "user") {
     if (this.state !== "conversation") return;
@@ -199,7 +222,7 @@ export class HandsFree {
   }
 
   onFrames(x) {
-    if (this.state !== "standby" && this.state !== "conversation") return;
+    if (this.state !== "standby" && this.state !== "conversation" && this.state !== "notes") return;
     // push-to-talk is recording: let it have the mic
     if (this.voice.recording) { this.seg = null; return; }
     const now = performance.now();
@@ -230,7 +253,7 @@ export class HandsFree {
       this.seg.parts.push(y.slice());
       this.seg.len += y.length;
       if (loud) this.seg.lastLoud = now;
-      const maxS = this.state === "standby" || this.seg.interrupting ? MAX_STANDBY_S : MAX_CONVO_S;
+      const maxS = this.state === "notes" ? 25 : this.state === "standby" || this.seg.interrupting ? MAX_STANDBY_S : MAX_CONVO_S;
       if (now - this.seg.lastLoud > END_SILENCE_MS || this.seg.len / RATE > maxS) {
         const seg = this.seg;
         this.seg = null;
@@ -253,7 +276,8 @@ export class HandsFree {
   preCopy() { return this.pre.slice(0, this.preN); }
 
   enqueue(seg) {
-    if (this.queue.length > 2) this.queue.shift(); // never fall far behind real time
+    // never fall far behind real time - except in a meeting, where every word matters
+    if (this.queue.length > (this.state === "notes" ? 60 : 2)) this.queue.shift();
     this.queue.push(seg);
     if (!this.working) this.drain();
   }
@@ -273,6 +297,13 @@ export class HandsFree {
     let o = 0;
     for (const part of seg.parts) { audio.set(part, o); o += part.length; }
     if (audio.length / RATE < 0.35) return;
+    if (this.state === "notes") {
+      const text = await this.voice.transcribe(audio);
+      if (Voice.isNoise(text) || this.state !== "notes") return;
+      if (isNotesEnd(text)) { this.h.onNotesEnd?.(); return; }
+      this.h.onNote?.(text, seg.t0);
+      return;
+    }
     const busyNow = seg.interrupting || this.h.isSpeaking?.() || this.h.isBusy?.();
 
     if (this.state === "standby" || busyNow) {

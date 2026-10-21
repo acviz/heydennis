@@ -6,6 +6,7 @@
 //   MediaPipe Tasks Vision + wasm -> ui/vendor/mediapipe/
 //   hand_landmarker.task model    -> ui/vendor/mediapipe/ (downloaded once, ~7.5 MB)
 //   transformers.js + ORT wasm    -> ui/vendor/transformers/ (local Whisper speech-to-text)
+//   Mermaid (ESM build + chunks)  -> ui/vendor/mermaid/ (the diagrams he draws)
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -108,6 +109,16 @@ if (fs.existsSync(kokoroDir)) {
   const lic = path.join(kokoroDir, "LICENSE");
   if (fs.existsSync(lic)) fs.copyFileSync(lic, path.join(out, "LICENSE"));
 } else warn("kokoro-js missing - the natural voice will be unavailable (system voice still works)");
+
+// Mermaid: the diagrams D.E.N.N.I.S. draws (show_diagram). Its ESM build loads each diagram
+// type it needs as a chunk, on demand; the source maps stay behind.
+copy("mermaid/dist/mermaid.esm.min.mjs", "mermaid/mermaid.esm.min.mjs");
+{
+  const from = path.join(NM, "mermaid", "dist", "chunks", "mermaid.esm.min");
+  if (!fs.existsSync(from)) warn("missing mermaid chunks (run a full \"npm install\")");
+  else fs.cpSync(from, path.join(OUT, "mermaid", "chunks", "mermaid.esm.min"), { recursive: true, filter: (src) => !src.endsWith(".map") });
+  copyLicense("mermaid", "mermaid");
+}
 
 // The hand model is not on npm; fetch it once and keep it.
 const modelPath = path.join(OUT, "mediapipe", "hand_landmarker.task");

@@ -17,6 +17,14 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { FileIndex, listDir } from "./fsindex.js";
 import { Agent } from "./agent.js";
+import { SKILLS_DIR, listSkills, installSkill, removeSkill } from "./skills.js";
+import { normalizeServers, claudeDesktopConfigPath } from "./mcp.js";
+import { TOOLSETS } from "./minions.js";
+import { PROVIDERS, brainOf, listModels } from "./brains.js";
+import { applyUndo } from "./tools.js";
+import { Reminders } from "./reminders.js";
+import { FolderWatcher } from "./watcher.js";
+import { history as undoHistory } from "./undo.js";
 import { resolveSafe, PathError } from "./paths.js";
 import { mimeOf, isExecutable, isTextLike, kindOf } from "./kinds.js";
 import { officeText } from "./office.js";
@@ -64,6 +72,13 @@ export async function startServer({ config, platform, mock = false, port } = {})
   let current = null; // { abort: AbortController }
   const eventClients = new Set();
   index.onStatus((status) => broadcast({ type: "index", status }));
+  agent.broadcast = broadcast; // minion progress and approvals reach every open window
+  agent.mcp.onChange((servers) => broadcast({ type: "mcp", servers }));
+  agent.mcp.start(); // connects in the background
+  // reminders go off in every open window; with none open they wait (and are announced as missed)
+  // the folder watcher: new batches of files and low disk space, said once (see watcher.js)
+  const watcher = new FolderWatcher({ config, index, kindOf, notify: (notice) => { if (!eventClients.size) return false; broadcast({ type: "watch", notice }); return true; } });
+  agent.reminders = new Reminders({ announce: (reminder, { missed }) => { if (!eventClients.size) return false; broadcast({ type: "reminder", reminder, missed }); return true; } });
   function broadcast(ev) {
     const line = `data: ${JSON.stringify(ev)}\n\n`;
     for (const res of eventClients) res.write(line);
@@ -149,16 +164,33 @@ export async function startServer({ config, platform, mock = false, port } = {})
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
       res.write(`data: ${JSON.stringify({ type: "index", status: index.status })}\n\n`);
       eventClients.add(res);
+      setTimeout(() => agent.reminders?.tick(), 2500); // anything that came due while no window was open
       const ping = setInterval(() => res.write(": ping\n\n"), 25000);
       req.on("close", () => { clearInterval(ping); eventClients.delete(res); });
       return;
     }
     if (route === "/settings" && req.method === "POST") {
       const patch = await readJson(req);
+      if (typeof patch.city === "string") {
+        // "Your city" for the weather: looked up once with Open-Meteo's free geocoder
+        const q = patch.city.trim();
+        if (!q) patch.location = null;
+        else if (q !== config.get("location")?.query) {
+          try {
+            const g = await (await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q.split(",")[0].trim())}&count=1&format=json`, { signal: AbortSignal.timeout(6000) })).json();
+            const hit = g.results?.[0];
+            if (hit) patch.location = { query: q, name: [hit.name, hit.country].filter(Boolean).join(", "), lat: hit.latitude, lon: hit.longitude };
+            else return send(res, 200, { ok: false, error: `I couldn't find a place called "${q}".`, config: config.publicView() });
+          } catch { return send(res, 200, { ok: false, error: "Couldn't look up that city right now.", config: config.publicView() }); }
+        }
+        delete patch.city;
+      }
       const before = JSON.stringify(config.get("roots")) + config.get("showHidden");
       config.update(patch);
       if (JSON.stringify(config.get("roots")) + config.get("showHidden") !== before) index.rebuild();
+      if ("roots" in patch || "watch" in patch) watcher.restart();
       agent.conv = null; // settings shape the system prompt and tools: next message starts fresh
+      agent.docsBlocked = null; // and give document skills another try
       return send(res, 200, { ok: true, config: config.publicView() });
     }
     if (route === "/list" && isGet) {
@@ -220,6 +252,25 @@ export async function startServer({ config, platform, mock = false, port } = {})
       }
       return;
     }
+    // the window answering a tool's request (show_diagram: did it draw, and the picture if asked)
+    if (route === "/ui-reply" && req.method === "POST") {
+      const { id, result } = await readJson(req, 40_000_000);
+      return send(res, 200, { ok: agent.resolveUi(String(id || ""), result) });
+    }
+    // a diagram's SAVE button: SVG and PNG into the data folder
+    if (route === "/diagram-save" && req.method === "POST") {
+      const b = await readJson(req, 40_000_000);
+      const dir = path.join(config.publicView().dataDir, "diagrams");
+      fs.mkdirSync(dir, { recursive: true });
+      const d = new Date(), p2 = (n) => String(n).padStart(2, "0");
+      const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+      const name = `${stamp} ${String(b.title || "Diagram").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim().slice(0, 60) || "Diagram"}`;
+      if (typeof b.svg !== "string" || !/^\s*<svg[\s>]/.test(b.svg)) return send(res, 400, { error: "not an SVG" });
+      fs.writeFileSync(path.join(dir, name + ".svg"), b.svg);
+      let file = path.join(dir, name + ".svg");
+      if (typeof b.png === "string" && b.png) { file = path.join(dir, name + ".png"); fs.writeFileSync(file, Buffer.from(b.png, "base64")); }
+      return send(res, 200, { ok: true, path: file });
+    }
     if (route === "/approve" && req.method === "POST") {
       const { id, yes } = await readJson(req);
       return send(res, 200, { ok: agent.resolveApproval(id, yes) });
@@ -278,6 +329,122 @@ export async function startServer({ config, platform, mock = false, port } = {})
       try { if (fs.statSync(file).size > 1_000_000) fs.renameSync(file, file + ".old"); } catch { /* first entry */ }
       fs.appendFileSync(file, JSON.stringify({ t: new Date().toISOString(), ...entry }) + "\n");
       return send(res, 200, { ok: true });
+    }
+    // ---- skills
+    if (route === "/skills" && isGet) {
+      const skills = listSkills(config.get("skillsDisabled") || []).map(({ id, name, description, enabled }) => ({ id, name, description, enabled }));
+      return send(res, 200, { dir: SKILLS_DIR, skills, canPick: !!platform.pickFolder });
+    }
+    if (route === "/skills" && req.method === "POST") {
+      const b = await readJson(req);
+      const disabled = new Set(config.get("skillsDisabled") || []);
+      try {
+        if (b.action === "install") {
+          let src = typeof b.path === "string" ? b.path.trim() : "";
+          if (!src && b.kind === "file") src = (await platform.pickFile?.({ title: "Choose a skill (.zip or SKILL.md)", filters: [{ name: "Skills", extensions: ["zip", "md"] }] })) || "";
+          else if (!src) src = (await platform.pickFolder?.()) || "";
+          if (!src) return send(res, 200, { ok: false, cancelled: true });
+          const sk = installSkill(src);
+          agent.conv = null; // the skill list lives in the system prompt
+          return send(res, 200, { ok: true, skill: { id: sk.id, name: sk.name } });
+        }
+        if (b.action === "toggle") {
+          if (b.enabled) disabled.delete(String(b.id)); else disabled.add(String(b.id));
+          config.update({ skillsDisabled: [...disabled] });
+          agent.conv = null;
+          return send(res, 200, { ok: true });
+        }
+        if (b.action === "remove") {
+          removeSkill(b.id);
+          disabled.delete(String(b.id));
+          config.update({ skillsDisabled: [...disabled] });
+          agent.conv = null;
+          return send(res, 200, { ok: true });
+        }
+        if (b.action === "reveal") {
+          fs.mkdirSync(SKILLS_DIR, { recursive: true });
+          await platform.openPath?.(SKILLS_DIR);
+          return send(res, 200, { ok: true });
+        }
+      } catch (e) { return send(res, 200, { ok: false, error: e.message }); }
+      return send(res, 400, { error: "unknown action" });
+    }
+    // ---- MCP connections
+    if (route === "/mcp" && isGet) {
+      const cd = claudeDesktopConfigPath();
+      return send(res, 200, { servers: agent.mcp.status(), config: config.get("mcpServers") || {}, claudeDesktop: fs.existsSync(cd) ? cd : null });
+    }
+    if (route === "/mcp" && req.method === "POST") {
+      const b = await readJson(req);
+      try {
+        if (b.action === "save") {
+          const servers = normalizeServers(b.servers ?? {});
+          config.update({ mcpServers: servers });
+          agent.conv = null;
+          agent.mcp.start();
+          return send(res, 200, { ok: true, config: servers });
+        }
+        if (b.action === "reconnect") {
+          for (const name of [...agent.mcp.servers.keys()]) await agent.mcp.disconnect(name);
+          agent.conv = null;
+          agent.mcp.start();
+          return send(res, 200, { ok: true });
+        }
+        if (b.action === "import-claude") {
+          // read Claude Desktop's servers for the user to review; nothing is saved here
+          const raw = JSON.parse(fs.readFileSync(claudeDesktopConfigPath(), "utf8"));
+          const servers = {}, skipped = [];
+          for (const [name, def] of Object.entries(raw?.mcpServers || {})) {
+            try { Object.assign(servers, normalizeServers({ [name]: def })); } catch (e) { skipped.push(`${name}: ${e.message}`); }
+          }
+          return send(res, 200, { ok: true, servers, skipped });
+        }
+      } catch (e) { return send(res, 200, { ok: false, error: e.message }); }
+      return send(res, 400, { error: "unknown action" });
+    }
+    // ---- meeting notes: the raw transcript is kept in the data folder the moment notes end
+    if (route === "/notes" && req.method === "POST") {
+      const b = await readJson(req, 5_000_000);
+      const dir = path.join(config.publicView().dataDir, "notes");
+      fs.mkdirSync(dir, { recursive: true });
+      const d = new Date(), p2 = (n) => String(n).padStart(2, "0");
+      const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}${p2(d.getMinutes())}`; // local time
+      const title = String(b.title || "Meeting").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").slice(0, 60);
+      const file = path.join(dir, `${stamp} ${title}.txt`);
+      fs.writeFileSync(file, String(b.text || ""));
+      return send(res, 200, { ok: true, path: file });
+    }
+    // ---- undo: "undo that" / Ctrl+Z, straight from you (no approval needed)
+    if (route === "/undo" && isGet) return send(res, 200, { history: undoHistory(10) });
+    if (route === "/undo" && req.method === "POST") {
+      const b = await readJson(req);
+      const refreshed = [];
+      const text = applyUndo(Math.max(1, Math.min(10, +b.count || 1)), { config, index, ui: (ev) => refreshed.push(ev.path) });
+      return send(res, 200, { ok: true, text, refresh: [...new Set(refreshed)] });
+    }
+    // ---- brains: which models a provider offers (for the Settings picker)
+    if (route === "/brains/models" && req.method === "POST") {
+      const b = await readJson(req);
+      const p = PROVIDERS[b.provider];
+      if (!p || b.provider === "anthropic") return send(res, 400, { error: "pick OpenAI, Gemini, Ollama or a custom server" });
+      const saved = config.get("provider") === b.provider ? brainOf(config) : { ...brainOf({ get: (k) => (k === "provider" ? b.provider : config.get(k)), getSecret: (k) => config.getSecret(k) }) };
+      const brain = { ...saved, provider: b.provider, label: p.label, baseUrl: String(b.baseUrl || saved.baseUrl || p.baseUrl || "").replace(/\/+$/, ""), apiKey: b.apiKey || (p.keyName ? config.getSecret(p.keyName) : null) };
+      try { return send(res, 200, { ok: true, models: await listModels(brain) }); }
+      catch (e) { return send(res, 200, { ok: false, error: e.message }); }
+    }
+    // ---- minions
+    if (route === "/minions" && isGet) {
+      return send(res, 200, { definitions: agent.minions.definitions(), runs: agent.minions.list(), toolsets: TOOLSETS });
+    }
+    if (route === "/minions" && req.method === "POST") {
+      const b = await readJson(req);
+      try {
+        if (b.action === "define") { const d = agent.minions.define(b.definition || {}); agent.conv = null; return send(res, 200, { ok: true, definition: d }); }
+        if (b.action === "remove") { agent.minions.undefine(b.name); agent.conv = null; return send(res, 200, { ok: true }); }
+        if (b.action === "deploy") return send(res, 200, { ok: true, run: agent.minions.deploy({ minion: b.minion, task: b.task }) });
+        if (b.action === "recall") return send(res, 200, { ok: agent.minions.recall(b.id) });
+      } catch (e) { return send(res, 200, { ok: false, error: e.message }); }
+      return send(res, 400, { error: "unknown action" });
     }
     if (route === "/pick-folder" && req.method === "POST") {
       if (!platform.pickFolder) return send(res, 200, { path: null });
@@ -343,6 +510,12 @@ export async function startServer({ config, platform, mock = false, port } = {})
     openUrl: `${base}/?k=${token}`,
     index,
     agent,
-    close: () => new Promise((r) => { for (const c of eventClients) c.end(); server.close(() => r()); }),
+    close: async () => {
+      for (const r of agent.minions.running()) agent.minions.recall(r.id);
+      agent.reminders?.close();
+      watcher.close();
+      await agent.mcp.close().catch(() => {}); // stops local MCP server processes
+      await new Promise((r) => { for (const c of eventClients) c.end(); server.close(() => r()); });
+    },
   };
 }

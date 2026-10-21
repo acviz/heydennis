@@ -26,6 +26,26 @@ function cleanForSpeech(t) {
     .trim();
 }
 
+// ---------- languages ----------
+// A rough guess at a reply's language, to pick a voice that can say it. Scripts settle
+// Arabic, Japanese and Chinese; for Latin text, a few telltale everyday words separate
+// French and Tagalog from English.
+const EN_WORDS = new Set("the and is are you your to of a in it that i for on with this be have not what can will do my at me so all was we they there".split(" "));
+const FR_WORDS = new Set("le la les de des et est vous je un une que qui pour pas dans sur avec votre nous ce ça c'est très bien mais oui merci bonjour bonsoir".split(" "));
+const TL_WORDS = new Set("ang ng mga sa ako ikaw ka ko mo siya po na ay hindi oo ito iyon kayo tayo natin namin para may wala lang din rin ba naman salamat".split(" "));
+export function textLanguage(t) {
+  if (/[\u0600-\u06FF]/.test(t)) return "ar";
+  if (/[\u3040-\u30FF]/.test(t)) return "ja"; // kana
+  if (/[\u4E00-\u9FFF]/.test(t)) return "zh"; // han and no kana
+  const words = String(t).toLowerCase().match(/[a-zà-ÿ']+/g) || [];
+  const hits = (set) => words.filter((w) => set.has(w)).length;
+  const en = hits(EN_WORDS), fr = hits(FR_WORDS), tl = hits(TL_WORDS);
+  if (fr >= 2 && fr > en) return "fr";
+  if (tl >= 2 && tl > en) return "tl";
+  return "en";
+}
+const SYSTEM_LANG = { tl: ["fil", "tl"], zh: ["zh"], ja: ["ja"], ar: ["ar"], fr: ["fr"] }; // speechSynthesis voice.lang prefixes
+
 export class Voice {
   constructor({ onSpeaking, onLevel, onStatus, onWord } = {}) {
     this.onSpeaking = onSpeaking || (() => {});
@@ -53,12 +73,14 @@ export class Voice {
   }
 
   configure(cfg = {}) {
-    const modelChanged = cfg.sttModel && cfg.sttModel !== this.cfg.sttModel;
-    if (cfg.engine === "kokoro" && !this.kokoro.worker && (cfg.speak ?? this.cfg.speak)) setTimeout(() => this.loadKokoro(), 0);
+    const before = this.sttModel;
+    // the local voice is the main one, or the stand-in while ElevenLabs has no key
+    const standIn = cfg.engine === "elevenlabs" && !(cfg.elevenOk ?? this.cfg.elevenOk);
+    if ((cfg.engine === "kokoro" || standIn) && !this.kokoro.worker && (cfg.speak ?? this.cfg.speak)) setTimeout(() => this.loadKokoro(), 0);
     if ("micId" in cfg && cfg.micId !== this.cfg.micId) this.closeMic();
     Object.assign(this.cfg, cfg);
     this.pickVoice();
-    if (modelChanged && this.worker) { this.sttReady = false; this.preload(); }
+    if (this.sttModel !== before && this.worker) { this.sttReady = false; this.preload(); } // a new model, or English <-> multilingual
   }
 
   voices() { return this.synth ? this.synth.getVoices().filter((v) => /^en/i.test(v.lang)) : []; }
@@ -75,8 +97,9 @@ export class Voice {
   feed(delta) {
     if (!this.cfg.speak) return;
     this.buf += delta;
-    // a sentence ends at . ! ? followed by whitespace (so "report.pdf" and "3.5" don't split), or at a newline
-    for (let m; (m = /[.!?]+["')\]]*\s|\n/.exec(this.buf));) {
+    // a sentence ends at . ! ? ؟ followed by whitespace (so "report.pdf" and "3.5" don't split), at the
+    // full-width 。！？ that Japanese and Chinese use without spaces, or at a newline
+    for (let m; (m = /[.!?\u061F]+["')\]]*\s|[\u3002\uFF01\uFF1F]+[\u300D\u300F\uFF09]*|\n/.exec(this.buf));) {
       const end = m.index + m[0].length;
       this.say(this.buf.slice(0, end));
       this.buf = this.buf.slice(end);
@@ -93,14 +116,22 @@ export class Voice {
   engineNow() {
     if (this.cfg.engine === "kokoro" && this.kokoro.ready) return "kokoro";
     if (this.cfg.engine === "elevenlabs" && this.cfg.elevenOk && !this.elevenFailed) return "elevenlabs";
+    if (this.cfg.engine === "elevenlabs" && this.kokoro.ready) return "kokoro"; // no key yet, or ElevenLabs is down: the local voice stands in
     return "system";
+  }
+
+  /** The local British voice only speaks English: other languages go to ElevenLabs if it's set up, else the system voice. */
+  engineFor(text) {
+    const e = this.engineNow();
+    if (e !== "kokoro" || textLanguage(text) === "en") return e;
+    return this.cfg.elevenOk && !this.elevenFailed ? "elevenlabs" : "system";
   }
 
   say(text) {
     if (!this.cfg.speak) return;
     const clean = cleanForSpeech(text);
     if (!clean) return;
-    const engine = this.engineNow();
+    const engine = this.engineFor(clean);
     if (engine !== "system") return this.sayNeural(clean, engine);
     this.saySystem(clean);
   }
@@ -108,7 +139,15 @@ export class Voice {
   saySystem(clean) {
     if (!this.synth) return;
     const u = new SpeechSynthesisUtterance(clean);
-    if (this.voice) u.voice = this.voice;
+    const lang = textLanguage(clean);
+    const native = lang !== "en" && this.synth.getVoices().find((v) => (SYSTEM_LANG[lang] || [lang]).some((p) => v.lang.toLowerCase().startsWith(p)));
+    if (lang !== "en" && !native) {
+      // no voice on this computer can say it: leave it on screen rather than mangle it
+      if (!this.warnedLang?.has(lang)) { (this.warnedLang ||= new Set()).add(lang); this.onStatus("system voice: replies in this language are shown, not spoken - add an ElevenLabs key in Settings to hear them"); }
+      return;
+    }
+    if (native) { u.voice = native; u.lang = native.lang; } // a system voice that speaks the reply's language
+    else if (this.voice) u.voice = this.voice;
     u.rate = this.cfg.rate || 0.96;
     u.pitch = this.cfg.pitch ?? 0.85;
     this.queue++;
@@ -254,6 +293,18 @@ export class Voice {
   get speaking() { return this.speakingNow; }
 
   // ---------- listening ----------
+  /** The speech model in use: the multilingual sibling of the chosen model when you speak more than English. */
+  get sttModel() {
+    const m = this.cfg.sttModel || "Xenova/whisper-base.en";
+    return (this.cfg.language || "en") !== "en" ? m.replace(/\.en$/i, "") : m;
+  }
+  /** The languages Whisper may hear: ["en"], one fixed language, or your list for auto-detection. */
+  get sttLanguages() {
+    const l = this.cfg.language || "en";
+    if (l === "auto") return (this.cfg.languages && this.cfg.languages.length ? this.cfg.languages : ["en"]).slice(0, 12);
+    return [l];
+  }
+
   ensureWorker() {
     if (this.worker) return;
     this.worker = new Worker("/js/stt-worker.js", { type: "module" });
@@ -263,10 +314,11 @@ export class Voice {
       if (m.type === "progress") this.onStatus(`downloading speech model ${Math.round((m.loaded / m.total) * 100)}%`);
       else if (m.type === "ready") {
         this.readyModels.add(m.model);
-        if (m.model === this.cfg.sttModel) { this.sttReady = true; this.onStatus("speech model ready"); }
+        if (m.model === this.sttModel) { this.sttReady = true; this.onStatus("speech model ready"); }
       } else if (m.type === "result" || m.type === "error") {
-        if (m.type === "error") { console.warn("[stt]", m.message); if (m.model === this.cfg.sttModel && !this.sttReady) this.sttFailed = true; }
+        if (m.type === "error") { console.warn("[stt]", m.message); if (m.model === this.sttModel && !this.sttReady) this.sttFailed = true; }
         const w = this.waiters.get(m.id);
+        if (w && m.type === "result" && w.main) this.lastLang = m.language || "en"; // the language you last spoke (not the wake-word pass)
         if (w) { this.waiters.delete(m.id); m.type === "result" ? w.resolve(m.text) : w.reject(new Error(m.message)); }
         else if (m.type === "error") this.onStatus(`speech model failed: ${m.message}`, true);
       }
@@ -275,18 +327,19 @@ export class Voice {
   }
 
   /** Start fetching a speech model in the background so the first talk is fast. */
-  preload(model = this.cfg.sttModel) {
+  preload(model = this.sttModel) {
     this.ensureWorker();
     this.worker.postMessage({ type: "load", model });
   }
 
   /** Transcribe 16 kHz mono samples. The buffer is handed to the worker (pass a copy to keep it). */
-  transcribe(audio, model = this.cfg.sttModel) {
+  transcribe(audio, model = this.sttModel) {
     this.ensureWorker();
     const id = ++this.reqId;
+    const main = model === this.sttModel;
     return new Promise((resolve, reject) => {
-      this.waiters.set(id, { resolve, reject });
-      this.worker.postMessage({ type: "transcribe", id, audio, model }, [audio.buffer]);
+      this.waiters.set(id, { resolve, reject, main });
+      this.worker.postMessage({ type: "transcribe", id, audio, model, languages: main ? this.sttLanguages : ["en"] }, [audio.buffer]);
     });
   }
 
@@ -380,7 +433,7 @@ export class Voice {
     this.stopSpeaking();
     if (this.sttFailed && this.webSpeechAvailable()) return this.startWebSpeech();
     this.ensureWorker();
-    if (!this.sttReady) this.worker.postMessage({ type: "load", model: this.cfg.sttModel });
+    if (!this.sttReady) this.worker.postMessage({ type: "load", model: this.sttModel });
     const pending = { cancelled: false };
     this.recording = { pending }; // "listening" while the mic connects, so a key release can cancel it
     let mic;
@@ -431,7 +484,7 @@ export class Voice {
     const dur = performance.now() - r.t0;
     const diag = (this.lastDiag = {
       ms: Math.round(dur), warmMs: r.warmMs, peak: +r.peak.toFixed(4), floor: Number.isFinite(r.quiet) ? +r.quiet.toFixed(4) : null,
-      speechMs: Math.round(r.speechMs), mic: r.mic.label, model: this.cfg.sttModel,
+      speechMs: Math.round(r.speechMs), mic: r.mic.label, model: this.sttModel,
     });
     if (dur < 300) { diag.reason = "too short"; return ""; }
     if (r.peak < 0.004) { diag.reason = "microphone delivered no sound"; return ""; }

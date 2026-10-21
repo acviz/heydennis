@@ -33,6 +33,17 @@ export const api = {
   reveal: (path) => req("POST", "/api/reveal", { path }),
   pickFolder: () => req("POST", "/api/pick-folder", {}),
   diag: (entry) => req("POST", "/api/diag", entry),
+  // capabilities: skills, MCP connections, minions
+  skills: () => req("GET", "/api/skills"),
+  skillsDo: (body) => req("POST", "/api/skills", body),
+  mcp: () => req("GET", "/api/mcp"),
+  mcpDo: (body) => req("POST", "/api/mcp", body),
+  minions: () => req("GET", "/api/minions"),
+  minionsDo: (body) => req("POST", "/api/minions", body),
+  undo: (count = 1) => req("POST", "/api/undo", { count }),
+  notes: (title, text) => req("POST", "/api/notes", { title, text }),
+  uiReply: (id, result) => req("POST", "/api/ui-reply", { id, result }),
+  saveDiagram: (title, svg, png) => req("POST", "/api/diagram-save", { title, svg, png }),
 
   /** Server-sent events for background status (index progress). */
   events(onEvent) {

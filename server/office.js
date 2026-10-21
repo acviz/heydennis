@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import zlib from "node:zlib";
 
-function readZip(buf) {
+export function readZip(buf) {
   // End-of-central-directory record: last 22 bytes + up to 64 KB of comment.
   let eocd = -1;
   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65535); i--) {
@@ -26,18 +26,20 @@ function readZip(buf) {
     files.set(name, { method, csize, local });
     off += 46 + nameLen + extraLen + commentLen;
   }
+  const readBuf = (name) => {
+    const f = files.get(name);
+    if (!f) return null;
+    const ln = buf.readUInt16LE(f.local + 26), le = buf.readUInt16LE(f.local + 28);
+    const start = f.local + 30 + ln + le;
+    const data = buf.subarray(start, start + f.csize);
+    if (f.method === 0) return Buffer.from(data);
+    if (f.method === 8) return zlib.inflateRawSync(data);
+    return null;
+  };
   return {
     names: [...files.keys()],
-    read(name) {
-      const f = files.get(name);
-      if (!f) return null;
-      const ln = buf.readUInt16LE(f.local + 26), le = buf.readUInt16LE(f.local + 28);
-      const start = f.local + 30 + ln + le;
-      const data = buf.subarray(start, start + f.csize);
-      if (f.method === 0) return data.toString("utf8");
-      if (f.method === 8) return zlib.inflateRawSync(data).toString("utf8");
-      return null;
-    },
+    readBuf, // raw bytes, for binary members
+    read(name) { return readBuf(name)?.toString("utf8") ?? null; },
   };
 }
 

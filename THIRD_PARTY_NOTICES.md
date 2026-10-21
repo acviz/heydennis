@@ -23,6 +23,7 @@ Its idea of an agent with a mind, a voice, a face and hands shaped D.E.N.N.I.S.'
 | [MediaPipe Tasks Vision](https://github.com/google-ai-edge/mediapipe) + Hand Landmarker model | Apache-2.0 | Hand tracking |
 | [transformers.js](https://github.com/huggingface/transformers.js) | Apache-2.0 | Local speech recognition |
 | [ONNX Runtime Web](https://github.com/microsoft/onnxruntime) | MIT | Runs the speech model |
+| [Mermaid](https://github.com/mermaid-js/mermaid) (with the libraries its build bundles, e.g. DOMPurify, dagre, d3) | MIT | Diagrams |
 | [Whisper](https://github.com/openai/whisper) models (downloaded on first use, ONNX conversions by Xenova) | MIT | Speech-to-text |
 
 ## Runtime dependencies
@@ -30,4 +31,5 @@ Its idea of an agent with a mind, a voice, a face and hands shaped D.E.N.N.I.S.'
 | Package | License |
 |---|---|
 | [@anthropic-ai/sdk](https://github.com/anthropics/anthropic-sdk-typescript) | MIT |
+| [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/typescript-sdk) | MIT |
 | [Electron](https://github.com/electron/electron) | MIT |
