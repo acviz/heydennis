@@ -32,9 +32,11 @@ export class Hud {
   tickClock() {
     const d = new Date();
     const p = (n) => String(n).padStart(2, "0");
-    const h12 = d.getHours() % 12 || 12, ampm = d.getHours() < 12 ? "AM" : "PM";
-    $("#clock-time").innerHTML = `${h12}<i>:</i>${p(d.getMinutes())}<small>${p(d.getSeconds())}</small><em>${ampm}</em>`;
-    $("#clock-date").textContent = d.toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short", year: "numeric" }).toUpperCase();
+    // like a phone's lock screen: the date, then a big time (seconds and AM/PM live in the corner readout)
+    const t = `${d.getHours() % 12 || 12}:${p(d.getMinutes())}`;
+    if ($("#clock-time").textContent !== t) $("#clock-time").textContent = t;
+    const day = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+    if ($("#clock-date").textContent !== day) $("#clock-date").textContent = day;
   }
 
   /** Kind composition of what's on screen: files directly here plus everything inside subfolders. */

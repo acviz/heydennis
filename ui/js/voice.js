@@ -45,6 +45,7 @@ export function textLanguage(t) {
   return "en";
 }
 const SYSTEM_LANG = { tl: ["fil", "tl"], zh: ["zh"], ja: ["ja"], ar: ["ar"], fr: ["fr"] }; // speechSynthesis voice.lang prefixes
+const LANG_NAME = { ar: "Arabic", tl: "Tagalog", fr: "French", ja: "Japanese", zh: "Chinese" };
 
 export class Voice {
   constructor({ onSpeaking, onLevel, onStatus, onWord } = {}) {
@@ -78,6 +79,7 @@ export class Voice {
     const standIn = cfg.engine === "elevenlabs" && !(cfg.elevenOk ?? this.cfg.elevenOk);
     if ((cfg.engine === "kokoro" || standIn) && !this.kokoro.worker && (cfg.speak ?? this.cfg.speak)) setTimeout(() => this.loadKokoro(), 0);
     if ("micId" in cfg && cfg.micId !== this.cfg.micId) this.closeMic();
+    if ("elevenOk" in cfg && cfg.elevenOk !== this.cfg.elevenOk) this.warnedLang = null; // a key was added or removed: explain afresh
     Object.assign(this.cfg, cfg);
     this.pickVoice();
     if (this.sttModel !== before && this.worker) { this.sttReady = false; this.preload(); } // a new model, or English <-> multilingual
@@ -142,8 +144,15 @@ export class Voice {
     const lang = textLanguage(clean);
     const native = lang !== "en" && this.synth.getVoices().find((v) => (SYSTEM_LANG[lang] || [lang]).some((p) => v.lang.toLowerCase().startsWith(p)));
     if (lang !== "en" && !native) {
-      // no voice on this computer can say it: leave it on screen rather than mangle it
-      if (!this.warnedLang?.has(lang)) { (this.warnedLang ||= new Set()).add(lang); this.onStatus("system voice: replies in this language are shown, not spoken - add an ElevenLabs key in Settings to hear them"); }
+      // no voice on this computer can say it: leave it on screen rather than mangle it, and say why (once per language)
+      if (!this.warnedLang?.has(lang)) {
+        (this.warnedLang ||= new Set()).add(lang);
+        const name = LANG_NAME[lang] || "that language", keyed = this.cfg.elevenOk;
+        this.onStatus(keyed ? `ElevenLabs isn't answering, so ${name} replies are shown, not spoken - check the key in Settings → Voice`
+          : `${name} replies are shown, not spoken - add your ElevenLabs key in Settings → Voice to hear them`);
+        this.say(keyed ? `That one's in ${name}, but ElevenLabs isn't answering, so I can't say it aloud. Check the key in Settings.`
+          : `That one's in ${name}, and I can't say ${name} aloud yet. Add your ElevenLabs key in Settings, under Voice, and I will.`);
+      }
       return;
     }
     if (native) { u.voice = native; u.lang = native.lang; } // a system voice that speaks the reply's language
@@ -282,7 +291,7 @@ export class Voice {
   }
 
   async elevenSpeak(text) {
-    const res = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json", "X-Dennis": "1" }, body: JSON.stringify({ text }) });
+    const res = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json", "X-Dennis": "1" }, body: JSON.stringify({ text, lang: textLanguage(text) }) });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || `HTTP ${res.status}`);

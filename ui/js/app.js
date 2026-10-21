@@ -32,7 +32,7 @@ const voice = new Voice({
   onSpeaking: (on) => { if (!on) S.acking = false; if (on) setState("speaking"); else if (!S.busy && !voice.listening) setState("idle"); else if (S.busy) setState("thinking"); },
   onLevel: (v) => { galaxy.setLevel(v); document.getElementById("mic")?.style.setProperty("--lvl", v.toFixed(2)); },
   onWord: () => { galaxy.pulse(); if (S.compact) orbCh.postMessage({ pulse: 1 }); },
-  onStatus: (msg, err) => { if (err) toast(msg, true); else if (/download|loading|transcrib/.test(msg)) showProgress(msg); else if (/ready/.test(msg)) hideProgress(); else if (/system voice/.test(msg)) toast(msg); },
+  onStatus: (msg, err) => { if (err) toast(msg, true); else if (/download|loading|transcrib/.test(msg)) showProgress(msg); else if (/ready/.test(msg)) hideProgress(); else if (/system voice|not spoken/.test(msg)) toast(msg); },
 });
 
 const instruments = new Hud({ voice });
@@ -48,12 +48,11 @@ setInterval(() => {
     voice: !v.speak ? "muted" : engine === "kokoro" ? `${(v.kokoroVoice || "bm_daniel").replace("bm_", "")} · local gpu` : engine === "elevenlabs" ? "elevenlabs" : "system",
     mic: voice.mic ? (voice.mic.label || "on").replace(/^Default - /, "").slice(0, 26) : S.hf === "off" ? "off" : "waking",
     hands: S.handsLive ? (tracker.cameraLabel || "on").slice(0, 26) : "off",
-    index: $("#chip-index").textContent.replace(/^INDEX(ING)? /, "").toLowerCase() + " files",
+    index: `${S.indexCount} files`,
     renderer: galaxy.backend,
   });
   const d = new Date(), p2 = (n) => String(n).padStart(2, "0");
   $("#ro-time").textContent = `${d.getHours() % 12 || 12}:${p2(d.getMinutes())}:${p2(d.getSeconds())} ${d.getHours() < 12 ? "AM" : "PM"}`;
-  $("#ro-files").textContent = $("#chip-index").textContent.replace(/^INDEX(ING)? /, "");
 }, 1000);
 
 // ---------------------------------------------------------------- state + small UI helpers
@@ -1022,7 +1021,7 @@ $("#chip-wake").onclick = () => {
 };
 
 // ---- continuous conversation: he listens all the time - no wake word, no key - until it's switched off
-// (CONVO chip, L, "continuous mode" / "continuous mode off", a held thumbs-up, the orb's menu, or "that's all")
+// (the speech-bubble button, L, "continuous mode" / "continuous mode off", a held thumbs-up, the orb's menu, or "that's all")
 S.continuous = false;
 const CONVO_ON = ["Continuous conversation on. Just talk - say \u201cthat's all\u201d when you're done.", "I'm all ears. No need to press anything.", "Very well, I'll keep listening. Talk whenever you like."];
 const CONVO_OFF = ["Continuous conversation off.", "Very well. Press the key or call my name when you need me.", "Standing down from listening."];
@@ -1079,8 +1078,8 @@ $("#ask").addEventListener("submit", (e) => {
   ask(text);
 });
 $("#stop").onclick = () => stopAll();
-$("#brand").onclick = async () => { await stopTurn(); await api.newChat(); $("#msgs").innerHTML = ""; addMsg("sys", "new conversation"); };
-$("#log-new").onclick = () => $("#brand").click();
+$("#brand .words").onclick = async () => { await stopTurn(); await api.newChat(); $("#msgs").innerHTML = ""; addMsg("sys", "new conversation"); };
+$("#log-new").onclick = () => $("#brand .words").click();
 $("#log-hide").onclick = () => { $("#log").classList.add("hidden"); updateInsets(); };
 $("#log-show").onclick = () => { $("#log").classList.remove("hidden"); updateInsets(); };
 
@@ -1380,13 +1379,24 @@ $("#chip-compact").hidden = !shell;
 $("#chip-compact").onclick = () => setCompact(true);
 $("#chip-full").onclick = () => toggleFullscreen();
 // reboot: tap once to arm, again within 3 s to confirm (a stray pinch shouldn't restart him)
+// the header's height (its rows of chips wrap on narrow windows): the panels below it follow
+// (layout sizes, unaffected by the boot slide-in). File windows open below the clock too.
+new ResizeObserver(() => {
+  const css = document.documentElement.style, chips = $("#chips"), center = $("#center");
+  css.setProperty("--top-h", `${$("#top").offsetHeight}px`);
+  css.setProperty("--chips-h", `${chips.offsetTop + chips.offsetHeight}px`);
+  css.setProperty("--center-h", `${center.offsetTop + center.offsetHeight}px`);
+  galaxy.safeTop = center.offsetTop + center.offsetHeight + 14;
+}).observe($("#top"));
+
+// the arc-reactor logo (top left) is the reboot button
 let rebootArmed = 0;
-$("#chip-reboot").onclick = () => {
+$("#reboot-ring").onclick = () => {
   if (performance.now() - rebootArmed < 3000) return reboot();
   rebootArmed = performance.now();
-  $("#chip-reboot").classList.add("warn");
-  toast("Tap again to reboot D.E.N.N.I.S.");
-  setTimeout(() => $("#chip-reboot").classList.remove("warn"), 3000);
+  $("#reboot-ring").classList.add("armed");
+  toast("Tap the logo again to reboot D.E.N.N.I.S.");
+  setTimeout(() => $("#reboot-ring").classList.remove("armed"), 3000);
 };
 const REBOOT_LINES = ["Rebooting. Back in a moment.", "Going down for a quick restart. Don't go anywhere.", "Restarting. Try not to miss me."];
 function reboot() {
@@ -1445,39 +1455,42 @@ function drawHud(t) {
 }
 
 // ---------------------------------------------------------------- chips
-function updateChips() {
-  const h = $("#chip-hands");
-  h.textContent = S.handsLive ? "HANDS ON" : tracker.running ? "HANDS ..." : SIM ? "HANDS SIM" : "HANDS OFF";
-  h.classList.toggle("off", !S.handsLive && !SIM);
-  $("#chip-cam").textContent = "CAM " + S.cam.toUpperCase();
-  $("#chip-cam").classList.toggle("off", S.cam === "off");
-  const v = $("#chip-voice");
-  v.textContent = voice.cfg.speak ? "VOICE ON" : "VOICE OFF";
-  v.classList.toggle("off", !voice.cfg.speak);
-  const w = $("#chip-wake");
-  if (S.continuous) { // the CONVO chip shows the conversation; this one just says whether the wake word is on
-    const wake = S.config?.voice?.wakeWord !== false;
-    w.textContent = wake ? "HEY DENNIS ON" : "HEY DENNIS OFF";
-    w.classList.toggle("off", !wake);
-    w.classList.remove("live");
-  } else {
-    w.textContent = { off: "HEY DENNIS OFF", starting: "MIC ...", standby: "STANDBY", conversation: "IN CONVERSATION", notes: "TAKING NOTES" }[S.hf || "off"];
-    w.classList.toggle("off", !S.hf || S.hf === "off");
-    w.classList.toggle("live", S.hf === "conversation");
-  }
-  const cv = $("#chip-convo");
-  cv.textContent = S.continuous ? (S.hf === "notes" ? "CONVO · NOTES" : "CONVO ON") : "CONVO OFF";
-  cv.classList.toggle("off", !S.continuous);
-  cv.classList.toggle("live", S.continuous);
+// The header's toggles are icons: lit = on, dim = off, green = a live conversation, amber = starting.
+// Their name and state are in the tooltip (and aria-label).
+function setChip(el, { on, live = false, warn = false, label }) {
+  el.classList.toggle("off", !on);
+  el.classList.toggle("live", live);
+  el.classList.toggle("warn", warn);
+  if (el.title !== label) { el.title = label; el.setAttribute("aria-label", label); }
 }
+function updateChips() {
+  setChip($("#chip-hands"), { on: S.handsLive || SIM, warn: tracker.running && !S.handsLive && !SIM,
+    label: `Hand tracking: ${S.handsLive ? "on" : tracker.running ? "starting..." : SIM ? "simulated" : "off"} (H)` });
+  setChip($("#chip-cam"), { on: S.cam !== "off", label: `Camera view: ${{ stage: "full stage", pip: "small window", off: "off" }[S.cam] || S.cam} - click to switch (C)` });
+  setChip($("#chip-voice"), { on: !!voice.cfg.speak, label: `Spoken replies: ${voice.cfg.speak ? "on" : "off"}` });
+  if (S.continuous) { // the conversation button shows the conversation; this one just says whether the wake word is on
+    const wake = S.config?.voice?.wakeWord !== false;
+    setChip($("#chip-wake"), { on: wake, label: `\u201cHey Dennis\u201d: ${wake ? "on" : "off"} (for after continuous conversation)` });
+  } else {
+    const hf = S.hf || "off";
+    setChip($("#chip-wake"), { on: hf !== "off", live: hf === "conversation", warn: hf === "starting" || hf === "notes",
+      label: { off: "\u201cHey Dennis\u201d: off - click to turn the wake word on", starting: "Microphone starting...", standby: "Standby - say \u201cHey Dennis\u201d", conversation: "In conversation - say \u201cthat's all\u201d to finish", notes: "Taking meeting notes" }[hf] || hf });
+  }
+  setChip($("#chip-convo"), { on: S.continuous, live: S.continuous,
+    label: S.continuous ? `Continuous conversation: on - he's listening${S.hf === "notes" ? " (taking notes)" : ""}. Click or press L to stop, or say \u201cthat's all\u201d`
+      : "Continuous conversation: off - click, press L, say \u201ccontinuous mode\u201d, or hold a thumbs-up" });
+}
+// the file index lives in the corner readout (click it to rescan)
+S.indexCount = "--";
 function updateIndexChip(st) {
-  const c = $("#chip-index");
   if (!st) return;
-  if (st.state === "scanning") { c.textContent = `INDEXING ${st.scanned.toLocaleString()}`; c.classList.add("warn"); }
-  else { c.textContent = `INDEX ${(st.total || 0).toLocaleString()}`; c.classList.remove("warn"); }
+  const scanning = st.state === "scanning";
+  S.indexCount = (scanning ? st.scanned : st.total || 0).toLocaleString();
+  $("#ro-index").innerHTML = `<b id="ro-files">${S.indexCount}</b>FILES <i>${scanning ? "INDEXING" : "INDEXED"}</i>`;
+  $("#ro-index").classList.toggle("scanning", scanning);
   if (st.state === "ready" && S.level?.mode === "root" && !S.indexRefreshed) { S.indexRefreshed = true; refresh(""); }
 }
-$("#chip-index").onclick = () => api.reindex().then(() => { S.indexRefreshed = false; toast("Rescanning your folders"); });
+$("#ro-index").onclick = () => api.reindex().then(() => { S.indexRefreshed = false; toast("Rescanning your folders"); });
 $("#chip-hands").onclick = () => toggleHands();
 $("#chip-cam").onclick = () => cycleCam();
 $("#chip-voice").onclick = async () => {
@@ -1570,7 +1583,10 @@ function openSettings(first = false) {
   f.kokoroVoice.value = c.voice?.kokoroVoice || "bm_daniel";
   f.elevenVoice.value = c.voice?.elevenVoice || "";
   f.elevenKey.value = "";
-  $("#eleven-state").textContent = c.hasElevenKey ? "· SAVED" : "";
+  // ElevenLabs chosen but no key: say plainly what that means (only English is spoken aloud)
+  const noKey = !c.hasElevenKey && (c.voice?.engine || "kokoro") === "elevenlabs";
+  $("#eleven-state").textContent = c.hasElevenKey ? "· SAVED" : noKey ? "· NOT SET - only English is spoken aloud until you add it" : "";
+  $("#eleven-state").classList.toggle("warn", noKey);
   f.sttModel.value = c.voice?.sttModel || "Xenova/whisper-base.en";
   f.language.value = c.voice?.language || "en";
   f.city.value = c.location?.query || c.location?.name || "";

@@ -72,7 +72,7 @@ A pinch only counts when your fingers actually touch. The tracker ignores tiny "
 ### Hands-free conversation
 
 **Continuous conversation** keeps him listening all the time, with no wake word and no key to press: just talk, and every sentence goes to him. To switch it on or off:
-- click **CONVO** in the header
+- click the speech-bubble button in the header (lit green while it's on)
 - press `L`
 - say or type "continuous mode" / "continuous mode off"
 - hold a **thumbs-up** 👍
@@ -121,11 +121,11 @@ Settings → **Languages you speak** sets this. Choose *Auto* for English, Arabi
 
 ### Compact mode, fullscreen and reboot
 
-The three icons beside `?` in the header do the following:
+The compact and fullscreen icons in the header, and the arc-reactor logo at the top left, do the following:
 
 - **Compact mode** hides the main window and leaves just the particle core floating on your desktop, always on top, brightened and with a soft glow and shadow so it stands out on any wallpaper. Drag it anywhere (it remembers the spot), click it to bring the full interface back, or right-click it for Open, Listen, Reboot and Quit. He keeps listening and talking in compact mode, and comes back by himself when he needs to show you something. Hand tracking pauses while he's compact.
 - **Fullscreen** toggles fullscreen, the same as `F11`.
-- **Reboot** relaunches D.E.N.N.I.S. and replays the boot sequence. Tap it twice within 3 seconds, so a stray click or pinch can't restart him.
+- **Reboot** is the arc-reactor logo next to the name: it relaunches D.E.N.N.I.S. and replays the boot sequence. Tap it twice within 3 seconds (it turns amber after the first tap), so a stray click or pinch can't restart him. Clicking the name itself starts a new conversation.
 
 You can also just ask: "go compact", "fullscreen", or "reboot yourself".
 

@@ -305,14 +305,21 @@ export async function startServer({ config, platform, mock = false, port } = {})
       // ElevenLabs voice: the key stays here on the server; the page only ever gets audio back
       const key = config.getSecret("elevenKey");
       if (!key) return send(res, 400, { error: "no ElevenLabs key in Settings" });
-      const { text } = await readJson(req, 20_000);
+      const { text, lang } = await readJson(req, 20_000);
       const v = config.get("voice") || {};
       const voiceId = encodeURIComponent(v.elevenVoice || "onwK4e9ZLuTAKqWW03F9");
-      const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`, {
+      const model = v.elevenModel || "eleven_flash_v2_5";
+      const body = { text: String(text || "").slice(0, 2500), model_id: model, voice_settings: { stability: 0.45, similarity_boost: 0.8 } };
+      // tell the v2.5 models which language it is, so a short Arabic or Japanese line isn't read with the wrong accent
+      // (Tagalog is left to auto-detection: it has no two-letter code the API is sure to accept)
+      if (/_v2_5$/.test(model) && ["en", "ar", "fr", "ja", "zh"].includes(lang)) body.language_code = lang;
+      const speak = (b) => fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`, {
         method: "POST",
         headers: { "xi-api-key": key, "Content-Type": "application/json", Accept: "audio/mpeg" },
-        body: JSON.stringify({ text: String(text || "").slice(0, 2500), model_id: v.elevenModel || "eleven_flash_v2_5", voice_settings: { stability: 0.45, similarity_boost: 0.8 } }),
+        body: JSON.stringify(b),
       });
+      let r = await speak(body);
+      if (!r.ok && r.status === 400 && body.language_code) { delete body.language_code; r = await speak(body); } // never lose the voice over the hint
       if (!r.ok) {
         const detail = await r.text().catch(() => "");
         return send(res, r.status === 401 ? 401 : 502, { error: r.status === 401 ? "ElevenLabs rejected the key" : `ElevenLabs error ${r.status}: ${detail.slice(0, 200)}` });

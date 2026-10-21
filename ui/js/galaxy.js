@@ -1000,7 +1000,7 @@ export class Galaxy {
     const cam = this.camera;
     cam.updateMatrixWorld();
     const fovPx = cam.projectionMatrix.elements[5] * this.h * 0.5;
-    const top = 96, bottom = 104, left = 18 + this.insetL, right = 18 + this.insetR;
+    const top = this.safeTop || 96, bottom = 104, left = 18 + this.insetL, right = 18 + this.insetR; // safeTop: below the clock
     const safeW = Math.max(240, this.w - left - right), safeH = Math.max(200, this.h - top - bottom);
     const fw0 = Math.min(safeW, Math.max(420, Math.min(680, this.w * 0.42)));
     const fh0 = Math.min(safeH, Math.max(300, fw0 * 0.66));
