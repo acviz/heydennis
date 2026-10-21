@@ -66,7 +66,7 @@ function setState(s) {
   galaxy.setState(s);
   $("#state-label").textContent = {
     idle: S.mock ? "ONLINE · MOCK" : S.hf === "standby" ? "STANDBY · SAY \u201cHEY DENNIS\u201d" : "ONLINE",
-    listening: convo ? "IN CONVERSATION" : "LISTENING", thinking: "THINKING", speaking: "SPEAKING",
+    listening: convo ? (S.continuous ? "CONTINUOUS CONVERSATION" : "IN CONVERSATION") : "LISTENING", thinking: "THINKING", speaking: "SPEAKING",
   }[s] || s.toUpperCase();
 }
 const restState = () => (S.busy ? "thinking" : voice.speaking ? "speaking" : "idle");
@@ -576,6 +576,8 @@ function handleUi(ev) {
     case "compact": setCompact(true); break;
     case "reboot": reboot(); break;
     case "theme": setTheme(ev.theme === "next" || !ev.theme ? nextTheme() : ev.theme); break;
+    case "conversation_on": setContinuous(true, { quiet: true }); break;
+    case "conversation_off": setContinuous(false, { quiet: true }); break;
     case "notes_start": setTimeout(() => startNotes(ev.title, { quiet: true }), 200); break;
     case "capture_flash": document.body.classList.remove("flash"); void document.body.offsetWidth; document.body.classList.add("flash"); setTimeout(() => document.body.classList.remove("flash"), 700); toast("Looked at your screen"); break;
     case "navigate":
@@ -819,6 +821,8 @@ async function runInstant(cmd, heard) {
     case "settings": openSettings(); break;
     case "capabilities": caps.open(); break;
     case "rescan": api.reindex().catch(() => {}); break;
+    case "continuousOn": return setContinuous(true);
+    case "continuousOff": return setContinuous(false);
     case "theme": {
       const t = setTheme(cmd.arg === "next" ? nextTheme() : cmd.arg);
       if (!cmd.ack) return reply(`${THEMES[t].label}.`);
@@ -846,7 +850,7 @@ async function doUndo() {
 }
 
 function stopAll() {
-  if (S.hf === "conversation") handsFree.endConversation("esc");
+  if (S.hf === "conversation" && !S.continuous) handsFree.endConversation("esc");
   voice.stopSpeaking();
   if (voice.listening) { voice.cancelListening(); S.listenSource = null; S.listenAuto = false; $("#mic").classList.remove("on"); }
   stopTurn();
@@ -964,7 +968,12 @@ S.hf = "off";
 const handsFree = new HandsFree(voice, {
   isBusy: () => S.busy,
   isSpeaking: () => voice.speaking && !S.acking, // his short "Yes?" shouldn't swallow your reply
-  onState: (st) => { S.hf = st; updateChips(); setState(restState()); },
+  onState: (st) => {
+    S.hf = st;
+    if (st === "off" && S.continuous) S.continuous = false; // the mic went away underneath it
+    updateChips();
+    setState(restState());
+  },
   onWake: (cmd) => {
     flashHint("HEY DENNIS");
     if (cmd) { caption(`"${cmd}"`); ask(cmd, { input: "voice" }); return; }
@@ -975,6 +984,13 @@ const handsFree = new HandsFree(voice, {
   },
   onCommand: (text) => { if (S.notes) return; caption(`"${text}"`); ask(text, { input: "voice" }); },
   onEnd: (reason) => {
+    if (reason === "convo-off") return setState(restState()); // setContinuous says its own piece
+    if (reason === "user" && S.continuous) { // "that's all" ends continuous conversation too
+      S.continuous = false;
+      api.settings({ voice: { continuous: false } }).then(({ config }) => { S.config = config; }).catch(() => {});
+      if (S.config?.voice?.wakeWord === false) handsFree.stop();
+      updateChips();
+    }
     if (reason === "user") { const s = pick(SIGNOFFS); voice.say(s); caption(s, 3000); }
     else caption("Standing by. Say \u201cHey Dennis\u201d when you need me.", 4000);
     setState(restState());
@@ -995,10 +1011,43 @@ async function startHandsFree() {
   try { await handsFree.start(); } catch { S.hf = "off"; updateChips(); }
 }
 $("#chip-wake").onclick = () => {
+  if (S.continuous) { // the mic stays open for continuous conversation; this only changes what happens after it
+    const on = S.config?.voice?.wakeWord === false;
+    api.settings({ voice: { wakeWord: on } }).then(({ config }) => { S.config = config; updateChips(); }).catch(() => {});
+    return toast(on ? "\u201cHey Dennis\u201d on for after continuous conversation" : "\u201cHey Dennis\u201d off for after continuous conversation");
+  }
   const on = S.hf === "off";
   if (on) startHandsFree(); else handsFree.stop();
   api.settings({ voice: { wakeWord: on } }).then(({ config }) => { S.config = config; }).catch(() => {});
 };
+
+// ---- continuous conversation: he listens all the time - no wake word, no key - until it's switched off
+// (CONVO chip, L, "continuous mode" / "continuous mode off", a held thumbs-up, the orb's menu, or "that's all")
+S.continuous = false;
+const CONVO_ON = ["Continuous conversation on. Just talk - say \u201cthat's all\u201d when you're done.", "I'm all ears. No need to press anything.", "Very well, I'll keep listening. Talk whenever you like."];
+const CONVO_OFF = ["Continuous conversation off.", "Very well. Press the key or call my name when you need me.", "Standing down from listening."];
+async function setContinuous(on, { save = true, quiet = false } = {}) {
+  on = !!on;
+  if (on === S.continuous) { if (!quiet) reply(on ? "I'm already listening." : "Continuous conversation is already off."); return; }
+  if (on && (PROBE || SIM)) return;
+  S.continuous = on;
+  updateChips();
+  flashHint(on ? "CONVO ON" : "CONVO OFF");
+  const remember = () => { if (save) api.settings({ voice: { continuous: on } }).then(({ config }) => { S.config = config; }).catch(() => {}); };
+  if (on) {
+    try { await handsFree.setContinuous(true); } catch { S.continuous = false; updateChips(); return; } // onError says why; nothing saved
+    remember();
+    if (!quiet) reply(pick(CONVO_ON));
+  } else {
+    remember();
+    await handsFree.setContinuous(false);
+    if (S.hf === "conversation") handsFree.endConversation("convo-off");
+    if (S.config?.voice?.wakeWord === false) handsFree.stop(); // no wake word either: the mic closes
+    if (!quiet) reply(pick(CONVO_OFF));
+  }
+  setState(restState());
+}
+$("#chip-convo").onclick = () => setContinuous(!S.continuous);
 
 // press-and-hold vs. tap, shared by Space and the mic button
 let pressAt = 0, pressSource = null;
@@ -1178,6 +1227,7 @@ const gestures = new Gestures({
   },
   peace() { back(); flashHint("BACK"); },
   fist() { voice.stopSpeaking(); closePreview(); caption(""); flashHint("HUSH"); },
+  thumbUp() { setContinuous(!S.continuous); },
   palm(phase, i, p, prog) {
     S.palmCharge[i] = phase === "charge" ? { x: p.x, y: p.y, prog } : null;
     if (phase === "start" && !voice.listening) beginListen("palm", { auto: false });
@@ -1405,9 +1455,20 @@ function updateChips() {
   v.textContent = voice.cfg.speak ? "VOICE ON" : "VOICE OFF";
   v.classList.toggle("off", !voice.cfg.speak);
   const w = $("#chip-wake");
-  w.textContent = { off: "HEY DENNIS OFF", starting: "MIC ...", standby: "STANDBY", conversation: "IN CONVERSATION", notes: "TAKING NOTES" }[S.hf || "off"];
-  w.classList.toggle("off", !S.hf || S.hf === "off");
-  w.classList.toggle("live", S.hf === "conversation");
+  if (S.continuous) { // the CONVO chip shows the conversation; this one just says whether the wake word is on
+    const wake = S.config?.voice?.wakeWord !== false;
+    w.textContent = wake ? "HEY DENNIS ON" : "HEY DENNIS OFF";
+    w.classList.toggle("off", !wake);
+    w.classList.remove("live");
+  } else {
+    w.textContent = { off: "HEY DENNIS OFF", starting: "MIC ...", standby: "STANDBY", conversation: "IN CONVERSATION", notes: "TAKING NOTES" }[S.hf || "off"];
+    w.classList.toggle("off", !S.hf || S.hf === "off");
+    w.classList.toggle("live", S.hf === "conversation");
+  }
+  const cv = $("#chip-convo");
+  cv.textContent = S.continuous ? (S.hf === "notes" ? "CONVO · NOTES" : "CONVO ON") : "CONVO OFF";
+  cv.classList.toggle("off", !S.continuous);
+  cv.classList.toggle("live", S.continuous);
 }
 function updateIndexChip(st) {
   const c = $("#chip-index");
@@ -1514,6 +1575,7 @@ function openSettings(first = false) {
   f.language.value = c.voice?.language || "en";
   f.city.value = c.location?.query || c.location?.name || "";
   f.briefOnBoot.checked = !!c.briefOnBoot;
+  f.continuous.checked = S.continuous;
   f.theme.value = themeName(c.visuals?.theme);
   f.theme.onchange = () => setTheme(f.theme.value, { save: false });
   f.watchOn.checked = c.watch?.enabled !== false;
@@ -1582,7 +1644,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
     effort: f.effort.value, permissionMode: f.permissionMode.value, webSearch: f.webSearch.checked, showHidden: f.showHidden.checked,
     roots: draftRoots,
     visuals: { theme: f.theme.value },
-    voice: { speak: f.speak.checked, voiceName: f.voiceName.value, sttModel: f.sttModel.value, language: f.language.value, micId: f.micId.value, wakeWord: f.wakeWord.checked,
+    voice: { speak: f.speak.checked, voiceName: f.voiceName.value, sttModel: f.sttModel.value, language: f.language.value, micId: f.micId.value, wakeWord: f.wakeWord.checked, continuous: f.continuous.checked,
       engine: f.engine.value, kokoroVoice: f.kokoroVoice.value, elevenVoice: f.elevenVoice.value.trim() || "onwK4e9ZLuTAKqWW03F9" },
     hands: { enabled: f.handsEnabled.checked, palmToTalk: f.palmToTalk.checked, cameraId: f.cameraId.value, mirror: f.mirrorCam.checked },
   };
@@ -1601,8 +1663,9 @@ $("#settings-form").addEventListener("submit", async (e) => {
     if (rootsChanged) { S.indexRefreshed = false; home(); }
     const camChanged = patch.hands.cameraId !== (prevHands.cameraId || "");
     if (patch.hands.enabled && (!tracker.running || camChanged)) restartHands();
-    if (patch.voice.wakeWord && S.hf === "off") startHandsFree();
-    if (!patch.voice.wakeWord && S.hf !== "off") handsFree.stop();
+    if (patch.voice.continuous !== S.continuous) setContinuous(patch.voice.continuous, { save: false });
+    else if (patch.voice.wakeWord && S.hf === "off") startHandsFree();
+    else if (!patch.voice.wakeWord && !patch.voice.continuous && S.hf !== "off") handsFree.stop();
     if (!patch.hands.enabled && tracker.running) toggleHands();
   } catch (er) { toast(er.message, true); }
 });
@@ -1649,6 +1712,7 @@ addEventListener("keydown", (e) => {
   else if (e.key === "?") $("#legend").classList.toggle("show");
   else if (e.key === "m") setCompact(!S.compact);
   else if (e.key === "t") { const t = setTheme(nextTheme()); toast(`Theme: ${THEMES[t].label}`); }
+  else if (e.key === "l") setContinuous(!S.continuous);
   else if (e.key === "f") { if (windowOpen()) setWindowMax(!focusedMax()); else toggleFullscreen(); }
 });
 addEventListener("keyup", (e) => {
@@ -1724,7 +1788,7 @@ async function runProbe() {
   const g = new Gestures({
     pinchStart: (i) => log.push(["ps", i]), pinchMove: (i, p, d) => log.push(["pm", i, d.x, d.y]),
     pinchEnd: (i, p, info) => log.push(["pe", i, info.quick]), two: (ph, info) => log.push(["two", ph, info.scale]),
-    peace: () => log.push(["peace"]), fist: () => log.push(["fist"]), palm: (ph) => log.push(["palm", ph]),
+    peace: () => log.push(["peace"]), fist: () => log.push(["fist"]), palm: (ph) => log.push(["palm", ph]), thumbUp: () => log.push(["thumb"]),
   });
   g.setVideoSize(0, 0);
   let now = 1000;
@@ -1743,7 +1807,10 @@ async function runProbe() {
   ok("peace held fires once", log.filter((e) => e[0] === "peace").length === 1);
   reset();
   feed(5, at(0.5, 0.5, "point")); feed(16, at(0.5, 0.5, "fist"));
-  ok("fist held fires (and never pinches)", log.some((e) => e[0] === "fist") && !log.some((e) => e[0] === "ps"));
+  ok("fist held fires (and never pinches)", log.some((e) => e[0] === "fist") && !log.some((e) => e[0] === "ps") && !log.some((e) => e[0] === "thumb"));
+  reset();
+  feed(5, at(0.5, 0.5, "point")); feed(20, at(0.5, 0.5, "thumbsup"));
+  ok("thumbs-up held fires once (and isn't a fist)", log.filter((e) => e[0] === "thumb").length === 1 && !log.some((e) => e[0] === "fist" || e[0] === "ps"), JSON.stringify(log.filter((e) => e[0] !== "pm")));
   reset();
   feed(4, at(0.4, 0.5, "point"), at(0.6, 0.5, "point"));
   feed(16, (k) => synthHand(0.4 - 0.15 * k, 0.5, "pinch"), (k) => synthHand(0.6 + 0.15 * k, 0.5, "pinch"));
@@ -1774,7 +1841,7 @@ addEventListener("unhandledrejection", (e) => api.diag({ kind: "rejection", mess
 window.__dennis = {
   S, galaxy, gestures, voice, ask, navigate, home, back, present, activate, showPreview,
   summon: () => { if (!voice.listening) beginListen("summon", { auto: true }); },
-  compact: setCompact, reboot, caps, setTheme, showDiagram,
+  compact: setCompact, reboot, caps, setTheme, showDiagram, setContinuous,
   talk: { pressStart, pressEnd, endListen },
   handsFree,
   probe: runProbe,
@@ -1946,7 +2013,8 @@ function bootSequence(st) {
     }
   }
   if (st.config.hands?.enabled !== false) startHands();
-  if (st.config.voice?.wakeWord !== false && !SIM) setTimeout(startHandsFree, 1500);
+  if (st.config.voice?.continuous && !SIM && !PROBE) setTimeout(() => { setContinuous(true, { save: false, quiet: true }).then(() => { if (S.continuous) toast("Continuous conversation is on - just talk"); }); }, 1500);
+  else if (st.config.voice?.wakeWord !== false && !SIM) setTimeout(startHandsFree, 1500);
   if (SIM) runSim();
   setTimeout(() => voice.preload(), 5000); // fetch the speech model in the background so the first talk is quick
 })();

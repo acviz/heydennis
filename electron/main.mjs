@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD = path.join(HERE, "preload.cjs");
 const SUMMON = "CommandOrControl+Shift+Space";
-const ORB_SIZE = 240;
+const ORB_SIZE = 280; // room for the glow around the core
 
 let win = null;
 let srv = null;
@@ -219,11 +219,14 @@ ipcMain.on("orb:drag", (e, phase, dx, dy) => {
   else if (phase === "move" && dragFrom) orb.setBounds({ x: Math.round(dragFrom[0] + dx), y: Math.round(dragFrom[1] + dy), width: ORB_SIZE, height: ORB_SIZE });
   else if (phase === "end") { dragFrom = null; saveOrb(); }
 });
-ipcMain.on("orb:menu", (e) => {
+ipcMain.on("orb:menu", async (e) => {
   if (!orb || e.sender !== orb.webContents) return;
+  const convo = await win?.webContents.executeJavaScript("!!(window.__dennis && window.__dennis.S.continuous)").catch(() => false);
+  if (!orb) return;
   Menu.buildFromTemplate([
     { label: "Open D.E.N.N.I.S.", click: () => setCompact(false) },
     { label: "Listen", click: () => win?.webContents.executeJavaScript("window.__dennis && window.__dennis.summon()").catch(() => {}) },
+    { label: "Continuous conversation", type: "checkbox", checked: !!convo, click: () => win?.webContents.executeJavaScript(`window.__dennis && window.__dennis.setContinuous(${!convo})`).catch(() => {}) },
     { type: "separator" },
     { label: "Reboot", click: relaunch },
     { label: "Quit", click: () => app.quit() },

@@ -16,11 +16,12 @@ Electron app + local Node server + browser UI. Claude (`claude-opus-5-5`, offici
 - Helpers: `server/brains.js` (OpenAI-compatible brains: GPT, Gemini, Ollama, custom; `callCompat` turns their stream into the same events as Claude's), `undo.js` (every create/move is recorded; undo moves things back or parks them in `~/.dennis/undone`, never deletes), `reminders.js`, `watcher.js` (folder watcher: batches of new files and low disk space, with cooldowns, quiet hours and DND), `office.js`.
 - UI round trip: `ctx.uiAsk(event)` (agent.js toolContext) emits a `ui` event with a `reply` id and waits for `POST /api/ui-reply`. `show_diagram` uses it: the window renders the Mermaid (`ui/js/diagram.js`, Mermaid vendored to `ui/vendor/mermaid/`), then answers with ok/error (and the PNG/SVG when saving).
 - `ui/js/themes.js`: the looks (reactor, spiral, neural, grid). Each scenery is procedural three.js (TSL shaders, instanced sprites, line segments), built when chosen and disposed when left. Never dispose a Sprite's geometry (three shares one across all sprites, the core's particles included) or the shared `tex.glow`. `galaxy.setTheme` crossfades; `THEMES[name].base` sets how much of the grid, stars, floor and dais shows. Keep sceneries dim, with no white glows: the core and windows must stay the brightest things.
+- Continuous conversation: `handsfree.setContinuous()` makes the conversation state sticky (entered without the wake word, never idles out; `stop()` clears it). The app's `setContinuous()` owns `S.continuous` (persisted as `voice.continuous`); toggles: CONVO chip, L, instant commands, thumbs-up (`hands.js` `thumbUp`, kept apart from `fist`), the orb's menu, `control_interface`.
 - `ui/js/galaxy.js` (three.js scene), `hands.js` (MediaPipe + gesture engine; thresholds in `TUNING`), `voice.js` + `stt-worker.js` (TTS + local Whisper, single-threaded on purpose), `app.js` (controller: one input model for mouse, hands and voice).
 
 ## Checks before calling a change done
 - `npm run check`: offline self-test (paths, validation, the agent loop against a fake Claude API, server auth).
-- UI: `npm run mock`, open the printed link; add `?probe=1` for the gesture battery (expect 10/10), `?sim=1` for synthetic hands.
+- UI: `npm run mock`, open the printed link; add `?probe=1` for the gesture battery (expect 11/11), `?sim=1` for synthetic hands.
 - Desktop: `DENNIS_SMOKE=shot.png npm start -- --mock` writes a screenshot and quits.
 - Themes and diagrams are visual: check them in the running app (screenshot every theme after a change, and watch the console for WebGPU validation errors).
 

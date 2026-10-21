@@ -595,9 +595,9 @@ export function buildTools({ webSearch, scope = "dennis", allow = null, docs = f
     },
     {
       name: "control_interface",
-      description: "Drive the on-screen interface: go home (all folders), go back up a level, close the preview, toggle the camera or hand tracking, toggle fullscreen, shrink to compact mode (just your core, floating on their desktop; you keep listening and talking), reboot (relaunch yourself - only when they ask for it), or change the theme - the look of the scene around you: reactor (the original arc-reactor rings and blueprint grid), spiral (a spiral galaxy of light trails), neural (a glowing neuron with filaments and sparks), grid (cyberspace: circuit traces and data walls), or next.",
+      description: "Drive the on-screen interface: go home (all folders), go back up a level, close the preview, toggle the camera or hand tracking, toggle fullscreen, shrink to compact mode (just your core, floating on their desktop; you keep listening and talking), reboot (relaunch yourself - only when they ask for it), switch continuous conversation on or off (conversation_on: you listen all the time, no wake word or key; conversation_off), or change the theme - the look of the scene around you: reactor (the original arc-reactor rings and blueprint grid), spiral (a spiral galaxy of light trails), neural (a glowing neuron with filaments and sparks), grid (cyberspace: circuit traces and data walls), or next.",
       input_schema: obj({
-        action: { type: "string", enum: ["home", "back", "close_preview", "toggle_camera", "toggle_hands", "fullscreen", "compact", "reboot", "theme"] },
+        action: { type: "string", enum: ["home", "back", "close_preview", "toggle_camera", "toggle_hands", "fullscreen", "compact", "reboot", "theme", "conversation_on", "conversation_off"] },
         theme: { type: "string", enum: ["reactor", "spiral", "neural", "grid", "next"], description: "For action theme: which one." },
       }, ["action"]),
       async run({ action, theme }, ctx) {

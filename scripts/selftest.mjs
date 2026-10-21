@@ -309,6 +309,8 @@ check("an unknown theme is ignored", config.get("visuals").theme === "neural");
 const ciEvents = [];
 const ci = await bt.byName.get("control_interface").run({ action: "theme", theme: "spiral" }, { ui: (e) => ciEvents.push(e) });
 check("he can switch the theme", ciEvents[0]?.action === "theme" && ciEvents[0]?.theme === "spiral" && /spiral/.test(ci));
+await bt.byName.get("control_interface").run({ action: "conversation_on" }, { ui: (e) => ciEvents.push(e) });
+check("he can switch continuous conversation on", ciEvents[1]?.action === "conversation_on" && !validate(bt.byName.get("control_interface").input_schema, { action: "conversation_off" }));
 
 // ---------------------------------------------------------------- diagrams
 const sd = bt.byName.get("show_diagram");

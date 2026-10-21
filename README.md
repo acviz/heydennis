@@ -71,6 +71,15 @@ A pinch only counts when your fingers actually touch. The tracker ignores tiny "
 
 ### Hands-free conversation
 
+**Continuous conversation** keeps him listening all the time, with no wake word and no key to press: just talk, and every sentence goes to him. To switch it on or off:
+- click **CONVO** in the header
+- press `L`
+- say or type "continuous mode" / "continuous mode off"
+- hold a **thumbs-up** 👍
+- right-click the compact orb → *Continuous conversation*
+
+"That's all" ends it too. While he's speaking he only listens for "stop" and "say that again", so he never answers himself. `Esc` silences him without ending the mode. It stays on across restarts until you switch it off (Settings has the same switch).
+
 - **"Hey Dennis"** wakes him. You can say the request in the same breath: "Hey Dennis, what's on my desktop?"
 - **Then just talk.** Every sentence is a message until you say "that's all", "goodbye", "stop listening" or similar. After 5 quiet minutes he goes back to standby.
 - **"Stop", "wait", "shut up" or "put a sock in it"** silences him mid-sentence and drops whatever he was working on. This works whenever he's talking, even outside a conversation.
@@ -114,7 +123,7 @@ Settings → **Languages you speak** sets this. Choose *Auto* for English, Arabi
 
 The three icons beside `?` in the header do the following:
 
-- **Compact mode** hides the main window and leaves just the particle core floating on your desktop, always on top. Drag it anywhere (it remembers the spot), click it to bring the full interface back, or right-click it for Open, Listen, Reboot and Quit. He keeps listening and talking in compact mode, and comes back by himself when he needs to show you something. Hand tracking pauses while he's compact.
+- **Compact mode** hides the main window and leaves just the particle core floating on your desktop, always on top, brightened and with a soft glow and shadow so it stands out on any wallpaper. Drag it anywhere (it remembers the spot), click it to bring the full interface back, or right-click it for Open, Listen, Reboot and Quit. He keeps listening and talking in compact mode, and comes back by himself when he needs to show you something. Hand tracking pauses while he's compact.
 - **Fullscreen** toggles fullscreen, the same as `F11`.
 - **Reboot** relaunches D.E.N.N.I.S. and replays the boot sequence. Tap it twice within 3 seconds, so a stray click or pinch can't restart him.
 

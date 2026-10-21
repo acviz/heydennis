@@ -39,6 +39,11 @@ export function matchCommand(text, { places = [] } = {}) {
   if (is(t, "stop (taking )?(the )?notes", "end (the )?notes", "stop recording( the meeting)?")) return { action: "notesStop", ack: "" };
   if (is(t, "do not disturb", "don't disturb me", "quiet mode", "(no|stop the|mute) notices", "notices off")) return { action: "dndOn", ack: "Understood. I'll keep my notices to myself." };
   if (is(t, "(you can )?disturb me( again)?", "notices on", "(turn )?off do not disturb", "quiet mode off")) return { action: "dndOff", ack: "Notices back on." };
+  // continuous conversation: he listens all the time, no wake word, no key
+  if (is(t, "continuous( conversation| mode| listening)*( on)?", "(start|turn on|enable|switch on|begin|go)( the)? continuous( conversation| mode| listening)*", "(conversation|convo) mode( on)?",
+    "keep listening", "stay listening", "(always|keep) listen(ing)? to me", "listen (continuously|all the time|constantly)", "hands ?free conversation", "stay with me")) return { action: "continuousOn", ack: "" };
+  if (is(t, "continuous( conversation| mode| listening)* off", "(stop|end|turn off|disable|switch off|exit|leave)( the)? continuous( conversation| mode| listening)*", "(conversation|convo) mode off",
+    "stop listening( continuously| all the time)?")) return { action: "continuousOff", ack: "" };
   // themes: "switch to the neural theme", "spiral theme", "next theme", "change the look"
   const th = /^(?:(?:switch|change|set|go)(?: (?:the )?(?:theme|look))?(?: to)?(?: the)? )?(reactor|spiral|neural|grid|galaxy|neuron|cyber ?space|original|default)(?: (?:theme|look|mode|style))?$/.exec(t);
   if (th && (/theme|look|mode|style|switch|change|set/.test(t))) {

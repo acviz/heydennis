@@ -4,6 +4,8 @@
 //                 utterances, and each one goes through Whisper tiny to spot "Dennis"
 //   conversation  every utterance is a message, no wake word needed, until you say
 //                 "that's all" (or similar), or nothing is said for a long while
+//   continuous    (setContinuous) the conversation is entered straight away and never
+//                 times out: he listens all the time until it's switched off or you say "that's all"
 //
 // While D.E.N.N.I.S. is speaking or thinking, utterances are still heard but only
 // "stop" / "shut up" / "say that again" / "that's all" act on them, so he never answers
@@ -116,6 +118,16 @@ export class HandsFree {
     this.state = "off";
     this.queue = [];
     this.working = false;
+    this.sticky = false; // continuous conversation
+  }
+
+  /** Continuous conversation: straight into conversation (no wake word), and it never times out. */
+  async setContinuous(on) {
+    this.sticky = !!on;
+    if (!on) return;
+    if (this.state === "off") await this.start(); // start() goes on into the conversation
+    else if (this.state === "standby") this.setState("conversation");
+    else if (this.state === "conversation") this.lastUtterance = performance.now();
   }
 
   async start() {
@@ -128,7 +140,7 @@ export class HandsFree {
       this.voice.preload(WAKE_MODEL);
       this.voice.preload();
       this.voice.onMicClosed = () => { if (this.state !== "off") this.reattach(); };
-      this.setState("standby");
+      this.setState(this.sticky ? "conversation" : "standby");
     } catch (e) {
       this.voice.keepMic = false;
       this.state = "off";
@@ -164,6 +176,7 @@ export class HandsFree {
     this.voice.keepMic = false;
     this.voice.releaseMicSoon(0);
     this.queue = [];
+    this.sticky = false;
     this.setState("off");
   }
 
@@ -183,7 +196,8 @@ export class HandsFree {
   endNotes() {
     if (this.state !== "notes") return;
     const back = this.notesFrom || "standby";
-    if (back === "off") this.stop(); else this.setState("standby");
+    if (this.sticky) this.setState("conversation");
+    else if (back === "off") this.stop(); else this.setState("standby");
   }
 
   enterConversation() { if (this.state === "standby") this.setState("conversation"); else if (this.state === "conversation") this.lastUtterance = performance.now(); }
@@ -262,7 +276,7 @@ export class HandsFree {
         this.enqueue(seg);
       }
     }
-    if (this.state === "conversation" && !this.seg && !interrupting && now - this.lastUtterance > IDLE_END_MS) this.endConversation("idle");
+    if (this.state === "conversation" && !this.sticky && !this.seg && !interrupting && now - this.lastUtterance > IDLE_END_MS) this.endConversation("idle");
   }
 
   pushPre(y) {

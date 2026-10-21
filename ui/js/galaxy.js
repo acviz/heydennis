@@ -204,6 +204,7 @@ export class Galaxy {
       sAspect: uniform(1),
       vAspect: uniform(16 / 9),
       assemble: uniform(1), // 0 -> 1 during boot: particles fly in and form the sphere
+      boost: uniform(1), // the core's brightness (the compact orb turns it up to stand out on the desktop)
       gridFade: uniform(1), // 0 -> 1 during boot
       gridOn: uniform(1), // how much of the blueprint grid the theme shows
       bgTop: uniform(THEMES.reactor.bg[0].clone()), // the theme's backdrop, top to bottom (linear light)
@@ -550,9 +551,9 @@ export class Galaxy {
     pm.positionNode = dir.mul(aRad.add(rise)).mul(swell).mul(R).mul(scatter);
     pm.sizeNode = aSz.mul(float(1).add(u.level.mul(0.9)));
     const dotShape = float(1).sub(length(uv().sub(0.5)).mul(2)).clamp(0, 1);
-    pm.colorNode = mix(u.deep, u.hot, pow(aBr, 2.2).add(u.level.mul(0.3)).clamp(0, 1));
+    pm.colorNode = mix(u.deep, u.hot, pow(aBr, 2.2).add(u.level.mul(0.3)).clamp(0, 1)).mul(u.boost);
     const sparkFade = mix(float(1), life.oneMinus().mul(smoothstep(0, 0.12, life)), aEm); // sparks fade as they rise
-    pm.opacityNode = pow(dotShape, 1.6).mul(aBr.mul(0.7).add(0.3)).mul(u.level.mul(0.6).add(0.85)).mul(u.assemble).mul(sparkFade);
+    pm.opacityNode = pow(dotShape, 1.6).mul(aBr.mul(0.7).add(0.3)).mul(u.level.mul(0.6).add(0.85)).mul(u.assemble).mul(sparkFade).mul(u.boost.min(1.35));
     const particles = new THREE.Sprite(pm);
     particles.count = N;
     particles.frustumCulled = false;
@@ -570,7 +571,7 @@ export class Galaxy {
     const lm = new THREE.LineBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
     lm.positionNode = positionLocal.mul(float(1).add(u.level.mul(0.12)).sub(u.pull.mul(0.05)));
     lm.colorNode = mix(u.deep, u.hot, 0.35);
-    lm.opacityNode = u.level.mul(0.35).add(0.16).mul(u.assemble.mul(u.assemble));
+    lm.opacityNode = u.level.mul(0.35).add(0.16).mul(u.assemble.mul(u.assemble)).mul(u.boost);
     const ng = new THREE.BufferGeometry();
     ng.setAttribute("position", new THREE.Float32BufferAttribute(seg, 3));
     net.add(new THREE.LineSegments(ng, lm));
@@ -581,7 +582,7 @@ export class Galaxy {
     vm.positionNode = A(NP, 3).mul(float(1).add(u.level.mul(0.12)).sub(u.pull.mul(0.05)));
     vm.sizeNode = float(1.8 * SZ).add(u.level.mul(2));
     vm.colorNode = mix(u.deep, u.hot, 0.7);
-    vm.opacityNode = pow(dotShape, 2).mul(0.7).mul(u.assemble);
+    vm.opacityNode = pow(dotShape, 2).mul(0.7).mul(u.assemble).mul(u.boost.min(1.35));
     const verts = new THREE.Sprite(vm);
     verts.count = P.length;
     verts.frustumCulled = false;
@@ -1271,13 +1272,23 @@ export class Orb {
     el.appendChild(this.renderer.domElement);
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(40, 1, 1, 3000);
-    this.camera.position.set(0, 60, 318); // the sphere fills the window; the outer disc just fits
+    this.camera.position.set(0, 68, 368); // the sphere as big as before, with room around it for the glow
     this.camera.lookAt(0, 0, 0);
     this.tex = { soft: radialTexture([[0, "rgba(255,255,255,.5)"], [0.4, "rgba(255,255,255,.12)"], [1, "rgba(255,255,255,0)"]]) };
     this.u = {
-      level: uniform(0), pull: uniform(0), t: uniform(0), assemble: uniform(0),
+      level: uniform(0), pull: uniform(0), t: uniform(0), assemble: uniform(0), boost: uniform(1.3), // brighter than in the galaxy: it has the desktop behind it
       deep: uniform(new THREE.Color(STATE_COLORS.idle[0])), hot: uniform(new THREE.Color(STATE_COLORS.idle[1])),
     };
+    // a soft shadow behind it, so it reads on a light or busy wallpaper too (invisible on a dark one)
+    const shadeTex = radialTexture([[0, "rgba(255,255,255,.9)"], [0.5, "rgba(255,255,255,.75)"], [0.72, "rgba(255,255,255,.3)"], [1, "rgba(255,255,255,0)"]]);
+    this.shade = new THREE.Sprite(new THREE.SpriteMaterial({ map: shadeTex, color: 0x000000, transparent: true, opacity: 0.6, depthWrite: false }));
+    this.shade.scale.setScalar(CORE_R * 3.5);
+    this.shade.renderOrder = -1;
+    this.scene.add(this.shade);
+    // and a halo of light around it, in the state's colour
+    this.halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.tex.soft, color: new THREE.Color(FRAME_COLOR.idle), transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false }));
+    this.halo.scale.setScalar(CORE_R * 4.5);
+    this.scene.add(this.halo);
     this.sphere = Galaxy.prototype.buildSphere.call(this, CORE_R);
     this.scene.add(this.sphere.group);
     this.state = "idle";
@@ -1291,11 +1302,14 @@ export class Orb {
     this.ready = this.renderer.init().then(() => {
       const scenePass = pass(this.scene, this.camera);
       const color = scenePass.getTextureNode("output");
-      this.bloom = bloom(color, 0.7, 0.45, 0.3);
+      this.bloom = bloom(color, 0.85, 0.55, 0.2);
       const Pipeline = THREE.RenderPipeline || THREE.PostProcessing;
       this.post = new Pipeline(this.renderer);
-      // the glow is light added over the desktop, so it keeps the scene's own (near zero) alpha
-      this.post.outputNode = vec4(color.rgb.add(this.bloom.rgb), color.a);
+      // light added over the desktop, but with some body: brighter areas get more opacity, so the
+      // core and its glow hold up on a light wallpaper instead of washing out
+      const edge = smoothstep(0.5, 0.42, length(screenUV.sub(0.5))); // fades out before the window's edge: no square shows
+      const rgb = color.rgb.add(this.bloom.rgb).mul(edge);
+      this.post.outputNode = vec4(rgb, max(color.a, dot(rgb, vec3(0.3, 0.59, 0.11)).mul(1.1)).clamp(0, 0.9).mul(edge));
       this.initialized = true;
     }).catch((e) => { console.error("[orb] renderer failed", e); this.failed = e; });
   }
@@ -1319,20 +1333,24 @@ export class Orb {
     const voiced = this.state === "listening" || this.state === "speaking";
     this.smooth += ((voiced ? this.level : 0) - this.smooth) * (1 - Math.exp(-dt * 14));
     this.pulseV *= Math.pow(0.02, dt);
-    u.level.value = Math.min(1, this.smooth + this.pulseV * 0.25);
+    u.level.value = Math.min(1, this.smooth + this.pulseV * 0.25) * 0.75;
     u.pull.value += ((this.state === "listening" ? 1 : 0) - u.pull.value) * (1 - Math.exp(-dt * 4));
     u.assemble.value = easeOut(Math.min(1, (performance.now() - this.born) / 1100)); // particles fly in when it appears
     const [deep, hot] = this.palette?.[this.state] || STATE_COLORS[this.state] || STATE_COLORS.idle;
     u.deep.value.lerp(new THREE.Color(deep), k6);
-    u.hot.value.lerp(new THREE.Color(hot), k6);
+    u.hot.value.lerp(new THREE.Color(hot).lerp(new THREE.Color(deep), 0.3), k6); // never quite white: it's lit up against the desktop
     const speed = this.state === "thinking" ? 3.4 : this.state === "listening" ? 0.6 : this.state === "speaking" ? 1.6 : 1;
     u.t.value += dt * speed;
     s.group.rotation.y += dt * 0.08 * speed;
     s.net.rotation.y -= dt * 0.12 * speed;
     s.net.rotation.x += dt * 0.05;
-    s.glow.material.opacity = 0.2 + u.level.value * 0.3;
+    s.glow.material.opacity = 0.42 + u.level.value * 0.3;
     s.group.position.y = Math.sin(this.t * (this.state === "thinking" ? 4 : 1.1)) * 1.5 + u.level.value * 4;
-    this.bloom.strength.value = 0.7 + u.level.value * 0.6;
+    this.halo.material.color.lerp(new THREE.Color(FRAME_COLOR[this.state] || FRAME_COLOR.idle), k6);
+    this.halo.material.opacity = (0.62 + u.level.value * 0.2 + Math.sin(this.t * 1.6) * 0.05) * u.assemble.value;
+    this.halo.position.y = s.group.position.y;
+    this.shade.material.opacity = 0.55 * u.assemble.value;
+    this.bloom.strength.value = 0.85 + u.level.value * 0.3;
     this.post.render();
   }
 }

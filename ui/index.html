@@ -28,6 +28,7 @@
       <button class="chip" id="chip-index" title="File index - click to rescan">INDEX ...</button>
       <button class="chip" id="chip-hands" title="Hand tracking (H)">HANDS</button>
       <button class="chip" id="chip-cam" title="Camera view (C)">CAM</button>
+      <button class="chip off" id="chip-convo" title="Continuous conversation: he listens all the time - no wake word, no key. Click, press L, say &quot;continuous mode&quot;, or hold a thumbs-up. &quot;That's all&quot; ends it.">CONVO OFF</button>
       <button class="chip" id="chip-wake" title="Hands-free: say &quot;Hey Dennis&quot; to start, &quot;that's all&quot; to finish">HEY DENNIS</button>
       <button class="chip" id="chip-voice" title="Speak replies">VOICE</button>
       <button class="chip icon" id="chip-caps" title="Capabilities: skills, minions, connected apps, documents"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.6l1.6 3.6 3.8.4-2.9 2.6.9 3.8L8 10.1 4.6 12l.9-3.8-2.9-2.6 3.8-.4z"/></svg></button>
@@ -98,9 +99,11 @@
     <div><b>Peace &#9996;</b> hold to go back a level</div>
     <div><b>Open palm</b> hold still to talk &middot; lower it to send</div>
     <div><b>Fist</b> hold to hush: stop speaking, close the preview</div>
+    <div><b>Thumbs-up &#128077;</b> hold to switch continuous conversation on or off</div>
     <h4>VOICE</h4>
     <div><b>"Hey Dennis"</b> (or "Dennis?", "Sup Dennis?") wakes him - then just talk, no wake word needed</div>
     <div><b>"That's all"</b> / "goodbye" / "stop listening" ends the conversation</div>
+    <div><b>"Continuous mode"</b> (or the CONVO chip, or <b>L</b>) keeps him listening all the time, no wake word or key &middot; "continuous mode off" or "that's all" ends it</div>
     <div><b>"Stop"</b> / "shut up" / "put a sock in it" silences him &middot; <b>"Say that again?"</b> / "can you repeat?" repeats his last reply</div>
     <h4>MOUSE</h4>
     <div><b>Drag</b> spin &middot; <b>Wheel</b> zoom &middot; <b>Middle-drag</b> pan &middot; <b>Middle-click</b> re-centre &middot; drag a file onto the core to ask about it</div>
@@ -185,6 +188,7 @@
         <label class="check"><input type="checkbox" name="mirrorCam"> Mirror camera (turn off if your hand moves the cursor the wrong way)</label>
         <label class="check"><input type="checkbox" name="palmToTalk"> Open palm = talk</label>
         <label class="check"><input type="checkbox" name="wakeWord"> Hands-free: "Hey Dennis" wakes him, "that's all" ends</label>
+        <label class="check"><input type="checkbox" name="continuous"> Continuous conversation: he listens all the time, no wake word or key (L, or a held thumbs-up)</label>
         <label class="check"><input type="checkbox" name="showHidden"> Show hidden files</label>
         <label>Theme
           <select name="theme"><option value="reactor">Reactor - the original arc-reactor look</option><option value="spiral">Spiral - a galaxy of light trails</option><option value="neural">Neural - filaments and sparks</option><option value="grid">Grid - cyberspace circuits and data</option></select>

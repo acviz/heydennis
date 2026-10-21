@@ -9,7 +9,7 @@
 //   - identity-stable hand slots (MediaPipe's hand order swaps between frames)
 //   - ghost-hand dedupe and a minimum hand size (phantoms from faces / shirts)
 //   - quick-tap gate on time AND palm drift, not on fingertip motion
-//   - static held poses (peace, fist, palm) instead of fragile motion gestures
+//   - static held poses (peace, fist, palm, thumbs-up) instead of fragile motion gestures
 // Camera frames never leave the page.
 
 export const TUNING = {
@@ -17,7 +17,7 @@ export const TUNING = {
   SPAN_MIN: 0.025, // hands smaller than this (fraction of frame) are background noise
   AMP: 1.4, // a comfortable central hand zone reaches the whole screen
   TAP_MS: 450, TAP_PX: 60,
-  PEACE_FRAMES: 8, FIST_FRAMES: 12, PALM_MS: 900,
+  PEACE_FRAMES: 8, FIST_FRAMES: 12, THUMB_FRAMES: 14, PALM_MS: 900,
   TWO_HAND_MIN_PX: 140,
   STALE_MS: 280,
 };
@@ -28,6 +28,9 @@ export function handMetrics(lm) {
   const span = Math.max(1e-4, dist(lm[0], lm[9]));
   const curl = (i) => dist(lm[i], lm[0]) / span;
   const tips = [curl(8), curl(12), curl(16), curl(20)];
+  // thumbs-up: fingers curled, thumb out and pointing up, well above the index knuckle
+  // (in a fist the thumb tip rests over the fingers, below the knuckles)
+  const thumbUp = tips.every((t) => t < 1.2) && dist(lm[4], lm[5]) / span > 0.75 && (lm[5].y - lm[4].y) / span > 0.55 && lm[4].y < lm[3].y;
   return {
     span,
     tips,
@@ -35,7 +38,8 @@ export function handMetrics(lm) {
     spread: dist(lm[8], lm[20]) / span, // fingers fanned out like a "stop" sign vs. held together
     open: tips.every((t) => t > 1.45),
     openish: tips.every((t) => t > 1.32),
-    fist: tips.every((t) => t < 1.05),
+    fist: tips.every((t) => t < 1.05) && !thumbUp,
+    thumbUp,
     peace: tips[0] > 1.45 && tips[1] > 1.45 && tips[2] < 1.15 && tips[3] < 1.15,
     palm: { x: (lm[0].x + lm[9].x) / 2, y: (lm[0].y + lm[9].y) / 2 },
     tip: lm[8],
@@ -70,12 +74,12 @@ function peakVelocity(tr) {
 }
 
 const fresh = () => ({ present: false, seen: 0, upT: 0, lm: null, m: null, smooth: null, oe: null, trail: [],
-  pinch: false, pinchN: 0, pinchT: 0, startPalm: null, last: null, peaceN: 0, fistN: 0, palm: null });
+  pinch: false, pinchN: 0, pinchT: 0, startPalm: null, last: null, peaceN: 0, fistN: 0, thumbN: 0, palm: null });
 
 /**
  * Turns landmark frames into gesture callbacks. Coordinates handed to handlers
  * are screen pixels. handlers: { cursor(states), pinchStart(i,p), pinchMove(i,p,d),
- * pinchEnd(i,p,info), two(phase,info), peace(i,p), fist(i,p), palm(phase,i,p,progress) }
+ * pinchEnd(i,p,info), two(phase,info), peace(i,p), fist(i,p), thumbUp(i,p), palm(phase,i,p,progress) }
  */
 export class Gestures {
   constructor(handlers = {}) {
@@ -172,6 +176,9 @@ export class Gestures {
       if (m.fist && !st.pinch) {
         if (++st.fistN === TUNING.FIST_FRAMES && now - this.lastFist > 1500) { this.lastFist = now; this.h.fist?.(i, cur); }
       } else st.fistN = 0;
+      if (m.thumbUp && !st.pinch) {
+        if (++st.thumbN === TUNING.THUMB_FRAMES && now - (this.lastThumb || 0) > 2500) { this.lastThumb = now; this.h.thumbUp?.(i, cur); }
+      } else st.thumbN = 0;
       this.palmStep(i, st, m, now);
     }
     this.twoHand();
@@ -368,19 +375,21 @@ export function dedupe(res) {
 /** Synthetic hand in landmark space (for ?sim=1 and the self-test). x,y are landmark coords. */
 export function synthHand(x, y, pose = "open", s = 0.09) {
   const lm = [];
-  const spread = pose === "open" || pose === "palm" ? 1.0 : pose === "fist" ? 0.38 : 0.78;
+  const curled = pose === "fist" || pose === "thumbsup";
+  const spread = pose === "open" || pose === "palm" ? 1.0 : curled ? 0.38 : 0.78;
   lm[0] = { x, y: y + s * 0.9 };
   lm[9] = { x, y: y - s * 0.1 };
   lm[1] = { x: x - s * 0.35, y: y + s * 0.55 }; lm[2] = { x: x - s * 0.5, y: y + s * 0.3 }; lm[3] = { x: x - s * 0.55, y: y + s * 0.1 };
   lm[5] = { x: x - s * 0.3, y: y - s * 0.15 }; lm[13] = { x: x + s * 0.15, y: y - s * 0.15 }; lm[17] = { x: x + s * 0.32, y: y - s * 0.1 };
   const ext = pose === "palm" ? 1.25 : 1.05;
   const fan = pose === "palm" ? 2.1 : 1; // palm: fingers fanned wide apart
-  const tipY = y - s * (pose === "fist" ? 0.35 : ext) * spread;
+  const tipY = y - s * (curled ? 0.35 : ext) * spread;
   lm[8] = {
     x: pose === "pinch" ? x - s * 0.18 : pose === "point" ? x - s * 0.28 : x - s * 0.28 * spread * fan,
     y: pose === "pinch" ? y - s * 0.5 : pose === "point" ? y - s * 1.05 : tipY,
   };
   lm[4] = { x: pose === "pinch" ? x - s * 0.16 : x - s * 0.62 * spread, y: pose === "pinch" ? y - s * 0.48 : y + s * 0.05 };
+  if (pose === "thumbsup") { lm[2] = { x: x - s * 0.45, y: y - s * 0.05 }; lm[3] = { x: x - s * 0.42, y: y - s * 0.5 }; lm[4] = { x: x - s * 0.4, y: y - s * 0.95 }; }
   const curlY = y - s * 0.133;
   lm[12] = { x: x - s * 0.05, y: pose === "point" ? curlY : tipY };
   lm[16] = { x: x + s * 0.16 * fan, y: (pose === "point" || pose === "peace" ? curlY : tipY) + s * 0.06 };
