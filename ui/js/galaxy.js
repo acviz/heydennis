@@ -201,6 +201,7 @@ export class Galaxy {
       hot: uniform(new THREE.Color(STATE_COLORS.idle[1])),
       cam: uniform(0), // camera feed visibility in the background
       mirror: uniform(1),
+      flip: uniform(0), // 1 = the full-stage camera picture renders upside down on this machine
       sAspect: uniform(1),
       vAspect: uniform(16 / 9),
       assemble: uniform(1), // 0 -> 1 during boot: particles fly in and form the sphere
@@ -293,8 +294,9 @@ export class Galaxy {
     // cover-fit the video, mirrored like a selfie view
     const k = u.sAspect.div(u.vAspect);
     const vx0 = select(k.greaterThan(1), screenUV.x, screenUV.x.sub(0.5).mul(k).add(0.5));
-    const vy = select(k.greaterThan(1), screenUV.y.sub(0.5).div(k).add(0.5), screenUV.y);
+    const vy0 = select(k.greaterThan(1), screenUV.y.sub(0.5).div(k).add(0.5), screenUV.y);
     const vx = mix(vx0, vx0.oneMinus(), u.mirror);
+    const vy = mix(vy0, vy0.oneMinus(), u.flip);
     this.blank = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
     this.blank.needsUpdate = true;
     this.vidNode = texture(this.blank, vec2(vx, vy));
@@ -306,15 +308,16 @@ export class Galaxy {
   }
 
   /** Show the webcam inside the scene ("stage"), or not ("pip" / "off" use the DOM video). */
-  setCameraFeed(video, mode, mirror = true) {
+  setCameraFeed(video, mode, mirror = true, flip = false) {
     if (video && !this.videoTex) {
       this.videoTex = new THREE.VideoTexture(video);
       this.videoTex.colorSpace = THREE.SRGBColorSpace;
       this.vidNode.value = this.videoTex;
       this.video = video;
     }
-    this.camGoal = mode === "stage" ? 1 : 0;
+    this.camGoal = mode === "stage" ? 0.1 : 0; // full-stage camera picture at 10% opacity (was 1 = 100%)
     this.u.mirror.value = mirror ? 1 : 0;
+    this.u.flip.value = flip ? 1 : 0;
   }
 
   // ---------- scenery ----------

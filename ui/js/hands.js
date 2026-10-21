@@ -16,11 +16,17 @@ export const TUNING = {
   PINCH_IN: 0.30, PINCH_OUT: 0.42, PINCH_EARN: 2,
   SPAN_MIN: 0.025, // hands smaller than this (fraction of frame) are background noise
   AMP: 1.4, // a comfortable central hand zone reaches the whole screen
-  TAP_MS: 450, TAP_PX: 60,
+  TAP_MS: 700, TAP_PX: 80, // roomy enough for a deliberate pinch-and-release, not only a flick
+  AIM_MS: 180, // a pinch acts on what you pointed at just before the fingers closed (closing them drags the fingertip)
   PEACE_FRAMES: 8, FIST_FRAMES: 12, THUMB_FRAMES: 14, PALM_MS: 900,
   TWO_HAND_MIN_PX: 140,
   STALE_MS: 280,
+  OE_MIN: 1.3, OE_BETA: 0.009, // pointer smoothing (One Euro): lower = steadier, a little more lag
+  GAIN: 1, // strength of pinch-drag spins, scrolling and flings
 };
+
+/** Settings -> Gesture feel "calm": a slower, steadier pointer, gentler drags, and poses held a little longer. */
+export const CALM = { AMP: 1.15, OE_MIN: 0.7, OE_BETA: 0.005, GAIN: 0.65, PEACE_FRAMES: 14, FIST_FRAMES: 20, THUMB_FRAMES: 22, PALM_MS: 1400 };
 
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -46,7 +52,7 @@ export function handMetrics(lm) {
   };
 }
 
-function oneEuro(st, raw, now) {
+function oneEuro(st, raw, now, minCut = TUNING.OE_MIN, beta = TUNING.OE_BETA) {
   const f = st.oe || (st.oe = { t: now, x: raw.x, y: raw.y, dx: 0, dy: 0 });
   let dt = (now - f.t) / 1000;
   if (!(dt > 1 / 240)) dt = 1 / 60;
@@ -56,7 +62,7 @@ function oneEuro(st, raw, now) {
   const ad = al(2.5);
   f.dx += ((raw.x - f.x) / dt - f.dx) * ad;
   f.dy += ((raw.y - f.y) / dt - f.dy) * ad;
-  const a = al(1.3 + 0.009 * Math.hypot(f.dx, f.dy));
+  const a = al(minCut + beta * Math.hypot(f.dx, f.dy));
   f.x += (raw.x - f.x) * a;
   f.y += (raw.y - f.y) * a;
   return { x: f.x, y: f.y };
@@ -78,7 +84,7 @@ const fresh = () => ({ present: false, seen: 0, upT: 0, lm: null, m: null, smoot
 
 /**
  * Turns landmark frames into gesture callbacks. Coordinates handed to handlers
- * are screen pixels. handlers: { cursor(states), pinchStart(i,p), pinchMove(i,p,d),
+ * are screen pixels. handlers: { cursor(states), pinchStart(i,aim,p), pinchMove(i,p,d),
  * pinchEnd(i,p,info), two(phase,info), peace(i,p), fist(i,p), thumbUp(i,p), palm(phase,i,p,progress) }
  */
 export class Gestures {
@@ -90,7 +96,11 @@ export class Gestures {
     this.lastPeace = -1e9;
     this.lastFist = -1e9;
     this.palmEnabled = true;
+    this.calm = false; // Settings -> Gesture feel
   }
+
+  /** A tuning value, with the calm overrides when calm is on. */
+  t(k) { return this.calm && k in CALM ? CALM[k] : TUNING[k]; }
 
   setVideoSize(vw, vh) {
     const W = innerWidth, H = innerHeight;
@@ -102,7 +112,7 @@ export class Gestures {
   /** landmark (normalised video coords) -> screen px, mirrored like the selfie view (unless the camera mirrors already). */
   px(p) {
     let nx = p.x, ny = p.y;
-    if (!this.map.id) { nx = 0.5 + (nx - 0.5) * TUNING.AMP; ny = 0.5 + (ny - 0.5) * TUNING.AMP; }
+    if (!this.map.id) { const amp = this.t("AMP"); nx = 0.5 + (nx - 0.5) * amp; ny = 0.5 + (ny - 0.5) * amp; }
     const x = nx * this.map.sx + this.map.ox;
     return { x: this.mirror === false && !this.map.id ? x : innerWidth - x, y: ny * this.map.sy + this.map.oy };
   }
@@ -150,7 +160,7 @@ export class Gestures {
       if (m && m.span < TUNING.SPAN_MIN) { lm = null; m = null; }
       if (!lm) { if (st.present) this.drop(i); continue; }
       st.present = true; st.seen++; st.upT = now; st.lm = lm; st.m = m;
-      const cur = (st.smooth = oneEuro(st, this.px(m.tip), now));
+      const cur = (st.smooth = oneEuro(st, this.px(m.tip), now, this.t("OE_MIN"), this.t("OE_BETA")));
       st.trail.push({ ...cur, t: now });
       if (st.trail.length > 10) st.trail.shift();
 
@@ -159,25 +169,27 @@ export class Gestures {
         if (++st.pinchN >= TUNING.PINCH_EARN) {
           st.pinch = true; st.pinchT = now; st.startPalm = this.px(m.palm); st.last = { ...cur };
           this.cancelPalm(i);
-          this.h.pinchStart?.(i, cur);
+          const aim = st.trail.find((q) => q.t >= now - TUNING.AIM_MS) || cur;
+          this.h.pinchStart?.(i, { x: aim.x, y: aim.y }, cur);
         }
       } else if (!st.pinch && m.pinch >= TUNING.PINCH_IN) st.pinchN = 0;
       else if (st.pinch && m.pinch > TUNING.PINCH_OUT) this.release(i, cur);
       else if (st.pinch) {
-        const d = { x: cur.x - st.last.x, y: cur.y - st.last.y };
+        const gain = this.t("GAIN");
+        const d = { x: (cur.x - st.last.x) * gain, y: (cur.y - st.last.y) * gain };
         st.last = { ...cur };
         if (!this.twoActive) this.h.pinchMove?.(i, cur, d);
       }
 
       // held poses
       if (m.peace && !st.pinch) {
-        if (++st.peaceN === TUNING.PEACE_FRAMES && now - this.lastPeace > 2500) { this.lastPeace = now; this.h.peace?.(i, cur); }
+        if (++st.peaceN === this.t("PEACE_FRAMES") && now - this.lastPeace > 2500) { this.lastPeace = now; this.h.peace?.(i, cur); }
       } else st.peaceN = 0;
       if (m.fist && !st.pinch) {
-        if (++st.fistN === TUNING.FIST_FRAMES && now - this.lastFist > 1500) { this.lastFist = now; this.h.fist?.(i, cur); }
+        if (++st.fistN === this.t("FIST_FRAMES") && now - this.lastFist > 1500) { this.lastFist = now; this.h.fist?.(i, cur); }
       } else st.fistN = 0;
       if (m.thumbUp && !st.pinch) {
-        if (++st.thumbN === TUNING.THUMB_FRAMES && now - (this.lastThumb || 0) > 2500) { this.lastThumb = now; this.h.thumbUp?.(i, cur); }
+        if (++st.thumbN === this.t("THUMB_FRAMES") && now - (this.lastThumb || 0) > 2500) { this.lastThumb = now; this.h.thumbUp?.(i, cur); }
       } else st.thumbN = 0;
       this.palmStep(i, st, m, now);
     }
@@ -199,7 +211,7 @@ export class Gestures {
       if (!st.palm) st.palm = { t0: now, x0: p.x, y0: p.y };
       // the hand has to be held still: waving at the screen is not "talk to me"
       if (Math.hypot(p.x - st.palm.x0, p.y - st.palm.y0) > 55) { st.palm = { t0: now, x0: p.x, y0: p.y }; }
-      const prog = (now - st.palm.t0) / TUNING.PALM_MS;
+      const prog = (now - st.palm.t0) / this.t("PALM_MS");
       if (prog >= 1) { st.palm = { active: true, lastOpen: now }; this.h.palm?.("start", i, p, 1); }
       else this.h.palm?.("charge", i, p, prog);
     } else this.cancelPalm(i);
@@ -215,8 +227,8 @@ export class Gestures {
     st.pinch = false; st.pinchN = 0;
     const palmNow = st.m ? this.px(st.m.palm) : st.startPalm;
     const quick = (this.now ?? performance.now()) - st.pinchT < TUNING.TAP_MS && st.startPalm && dist(st.startPalm, palmNow) < TUNING.TAP_PX;
-    const v = peakVelocity(st.trail);
-    this.h.pinchEnd?.(i, cur, { quick, vx: v.vx, vy: v.vy, speed: v.sp, during2: !!this.twoActive });
+    const v = peakVelocity(st.trail), gain = this.t("GAIN");
+    this.h.pinchEnd?.(i, cur, { quick, vx: v.vx * gain, vy: v.vy * gain, speed: v.sp * gain, during2: !!this.twoActive });
   }
 
   twoHand() {
@@ -237,7 +249,7 @@ export class Gestures {
   emitCursor() {
     this.h.cursor?.(this.hands.map((st, i) => ({
       i, present: st.present && st.seen >= 3, x: st.smooth?.x ?? 0, y: st.smooth?.y ?? 0, pinch: st.pinch,
-      pinchRatio: st.m?.pinch ?? 1, lm: st.lm, palm: st.palm ? (st.palm.active ? 1 : Math.min(1, (performance.now() - st.palm.t0) / TUNING.PALM_MS)) : 0,
+      pinchRatio: st.m?.pinch ?? 1, lm: st.lm, palm: st.palm ? (st.palm.active ? 1 : Math.min(1, (performance.now() - st.palm.t0) / this.t("PALM_MS"))) : 0,
       palmActive: !!st.palm?.active,
     })));
   }

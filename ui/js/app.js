@@ -1182,7 +1182,7 @@ const gestures = new Gestures({
     if (dom) setNodeHover(null);
     else if (!mouse) setNodeHover(galaxy.pick(primary.x, primary.y, 30), primary.x, primary.y);
   },
-  pinchStart(i, p) {
+  pinchStart(i, p, cur = p) { // p: where you aimed just before pinching; cur: the fingertip now
     const dom = domTargetAt(p.x, p.y);
     if (dom) {
       S.grabs[i] = dom.matches(".pbody") || dom.closest(".pbody") ? { type: "scroll", el: dom.closest(".pbody") } : { type: "dom", el: dom };
@@ -1190,14 +1190,14 @@ const gestures = new Gestures({
       return;
     }
     const t = galaxy.pick(p.x, p.y, 30);
-    S.grabs[i] = { type: t === "core" ? "core" : t ? (t.item.isDir || t.item.more ? "dir" : "file") : "space", node: t, x0: p.x, y0: p.y, carry: false };
+    S.grabs[i] = { type: t === "core" ? "core" : t ? (t.item.isDir || t.item.more ? "dir" : "file") : "space", node: t, x0: cur.x, y0: cur.y, carry: false };
   },
   pinchMove(i, p, d) {
     const g = S.grabs[i];
     if (!g) return;
     if (g.type === "scroll") g.el.scrollTop -= d.y * 2.2;
     else if (g.type === "file") {
-      if (!g.carry && Math.hypot(p.x - g.x0, p.y - g.y0) > 34) { g.carry = true; galaxy.beginCarry(g.node); }
+      if (!g.carry && Math.hypot(p.x - g.x0, p.y - g.y0) > 50) { g.carry = true; galaxy.beginCarry(g.node); }
       if (g.carry) galaxy.carryTo(p.x, p.y);
     } else if (g.type === "space" || g.type === "dir" || g.type === "core") galaxy.orbitBy(d.x * 1.2, d.y * 1.2);
   },
@@ -1287,7 +1287,7 @@ function setCam(mode) {
     S.config.hands = { ...(S.config.hands || {}), camView: mode };
     api.settings({ hands: { camView: mode } }).catch(() => {});
   }
-  galaxy.setCameraFeed($("#cam"), mode, S.config?.hands?.mirror !== false); // "stage": drawn inside the 3D scene as a hologram
+  galaxy.setCameraFeed($("#cam"), mode, S.config?.hands?.mirror !== false, !!S.config?.hands?.stageFlip); // "stage": drawn inside the 3D scene as a hologram
   updateChips();
 }
 const cycleCam = () => setCam(CAM_MODES[(CAM_MODES.indexOf(S.cam) + 1) % CAM_MODES.length]);
@@ -1418,9 +1418,173 @@ function sizeHud() { hud.width = innerWidth * devicePixelRatio; hud.height = inn
 sizeHud();
 addEventListener("resize", () => { sizeHud(); gestures.setVideoSize(tracker.video.videoWidth, tracker.video.videoHeight); });
 
+// HOLOGRAM HANDS: every tracked hand is drawn as a see-through hologram, like hand tracking in a VR headset:
+// a smooth glassy body that fades out at the wrist, a glowing rim, faint knuckle creases and lit fingertips.
+// Each layer is built opaque on a scratch canvas first, so overlapping fingers never double up.
+const holoBody = document.createElement("canvas"), hb = holoBody.getContext("2d");
+const holoRim = document.createElement("canvas"), hr = holoRim.getContext("2d");
+const holoPts = [null, null]; // lightly smoothed screen points per hand slot
+// joint radii as a fraction of the palm length (wrist -> middle knuckle): knuckle, middle joint, top joint, tip
+const HOLO_FINGERS = [
+  { j: [1, 2, 3, 4], r: [0.15, 0.112, 0.098, 0.086] }, // thumb
+  { j: [5, 6, 7, 8], r: [0.1, 0.088, 0.08, 0.071] },
+  { j: [9, 10, 11, 12], r: [0.104, 0.092, 0.082, 0.073] },
+  { j: [13, 14, 15, 16], r: [0.097, 0.085, 0.077, 0.069] },
+  { j: [17, 18, 19, 20], r: [0.085, 0.074, 0.067, 0.06] }, // pinky
+];
+const hv = {
+  add: (a, b) => ({ x: a.x + b.x, y: a.y + b.y }), sub: (a, b) => ({ x: a.x - b.x, y: a.y - b.y }),
+  mul: (a, k) => ({ x: a.x * k, y: a.y * k }), lerp: (a, b, k) => ({ x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k }),
+  norm: (a) => { const l = Math.hypot(a.x, a.y) || 1; return { x: a.x / l, y: a.y / l }; },
+};
+/** The accent colour (it follows his state: cyan, green while listening, amber while thinking) as [r, g, b]. */
+function holoRGB(c) {
+  const h = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(c);
+  if (h) { const x = h[1].length === 3 ? [...h[1]].map((d) => d + d).join("") : h[1]; return [0, 2, 4].map((i) => parseInt(x.slice(i, i + 2), 16)); }
+  const r = /rgba?\(([^)]+)\)/.exec(c);
+  return r ? r[1].split(/[ ,/]+/).slice(0, 3).map(Number) : [94, 242, 255];
+}
+const holoMix = (c, k, a = 1) => `rgba(${c.map((v) => Math.round(v + (255 - v) * k)).join(",")},${a})`; // toward white by k
+const holoDim = (c, k, a = 1) => `rgba(${c.map((v) => Math.round(v * k)).join(",")},${a})`; // toward black by k
+
+/** The hand as simple solids: a rounded palm (with thumb webbing and a wrist that runs off to fade) and tapered fingers. */
+function holoGeom(P, span) {
+  const u = hv.norm(hv.sub(P[0], P[9])); // toward the wrist
+  const v = { x: -u.y, y: u.x };
+  const side = Math.sign((P[1].x - P[0].x) * v.x + (P[1].y - P[0].y) * v.y) || 1; // which side the thumb is on
+  const wrist = (k) => hv.add(P[0], hv.add(hv.mul(v, k * span * 0.27), hv.mul(u, span * 0.34)));
+  const web = hv.lerp(hv.lerp(P[2], P[5], 0.5), P[1], 0.3); // skin between thumb and index
+  const palm = [wrist(side), P[1], web, P[5], P[9], P[13], P[17], wrist(-side * 0.92)];
+  // the soft pad at the base of the thumb, rounding off the corner between thumb and wrist
+  const pads = [{ c: hv.add(hv.lerp(P[0], P[1], 0.62), hv.mul(v, -side * span * 0.04)), r: span * 0.21 }];
+  const fingers = HOLO_FINGERS.map((f) => {
+    const c = f.j.map((k) => P[k]), n = c.length - 1, r = f.r.map((x) => x * span);
+    c[n] = hv.sub(c[n], hv.mul(hv.norm(hv.sub(c[n], c[n - 1])), r[n] * 0.55)); // the tip landmark sits at the very end of the finger
+    return { c, r };
+  });
+  return { u, palm, pads, fingers, palmR: span * 0.085 };
+}
+
+/** Fill the hand silhouette, every part shrunk by `shrink` px (used to cut the rim out of the solid). */
+function holoShape(g, G, shrink) {
+  g.beginPath();
+  G.palm.forEach((p, i) => (i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y)));
+  g.closePath();
+  g.fill();
+  g.lineJoin = "round";
+  g.lineWidth = Math.max(0.5, 2 * (G.palmR - shrink));
+  g.stroke();
+  for (const b of G.pads) { g.beginPath(); g.arc(b.c.x, b.c.y, Math.max(0.5, b.r - shrink), 0, Math.PI * 2); g.fill(); }
+  for (const f of G.fingers) {
+    for (let k = 0; k < f.c.length; k++) {
+      const r = Math.max(0.5, f.r[k] - shrink);
+      g.beginPath(); g.arc(f.c[k].x, f.c[k].y, r, 0, Math.PI * 2); g.fill();
+      if (k) holoTaper(g, f.c[k - 1], Math.max(0.5, f.r[k - 1] - shrink), f.c[k], r);
+    }
+  }
+}
+/** A smoothly tapering limb between two joint circles (the outer tangents), so fingers have no steps. */
+function holoTaper(g, a, ra, b, rb) {
+  const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+  if (d <= Math.abs(ra - rb) + 0.01) return;
+  const nx = dx / d, ny = dy / d, s = (ra - rb) / d, c = Math.sqrt(1 - s * s);
+  const m1x = -ny * c + nx * s, m1y = nx * c + ny * s, m2x = ny * c + nx * s, m2y = -nx * c + ny * s;
+  g.beginPath();
+  g.moveTo(a.x + m1x * ra, a.y + m1y * ra); g.lineTo(b.x + m1x * rb, b.y + m1y * rb);
+  g.lineTo(b.x + m2x * rb, b.y + m2y * rb); g.lineTo(a.x + m2x * ra, a.y + m2y * ra);
+  g.closePath(); g.fill();
+}
+
+function drawHoloHand(s, accent, t = 0) {
+  const raw = s.lm.map((p) => gestures.px(p));
+  const prev = holoPts[s.i];
+  const P = (holoPts[s.i] = prev ? raw.map((p, k) => hv.lerp(prev[k], p, 0.55)) : raw);
+  const span = Math.hypot(P[0].x - P[9].x, P[0].y - P[9].y);
+  if (!(span > 8)) return;
+  const G = holoGeom(P, span);
+  // work only inside the hand's own box, so the glow stays cheap
+  const pts = [...G.palm, ...G.fingers.flatMap((f) => f.c)], pad = span * 0.3 + 24;
+  const x0 = Math.max(0, Math.min(...pts.map((p) => p.x)) - pad), y0 = Math.max(0, Math.min(...pts.map((p) => p.y)) - pad);
+  const x1 = Math.min(innerWidth, Math.max(...pts.map((p) => p.x)) + pad), y1 = Math.min(innerHeight, Math.max(...pts.map((p) => p.y)) + pad);
+  if (x1 <= x0 || y1 <= y0) return;
+  const bw = x1 - x0, bh = y1 - y0, d = devicePixelRatio;
+  const tipward = hv.sub(P[0], hv.mul(G.u, span * 2.05)); // just past the fingertips
+  const fadeA = hv.add(P[0], hv.mul(G.u, span * 0.34)), fadeB = hv.sub(P[0], hv.mul(G.u, span * 0.1));
+  const C = holoRGB(accent);
+  const grad = (g, stops, a = P[0], b = tipward) => { const gr = g.createLinearGradient(a.x, a.y, b.x, b.y); stops.forEach(([o, c]) => gr.addColorStop(o, c)); return gr; };
+
+  for (const [cv, g] of [[holoBody, hb], [holoRim, hr]]) {
+    if (cv.width !== hud.width || cv.height !== hud.height) { cv.width = hud.width; cv.height = hud.height; }
+    g.setTransform(d, 0, 0, d, 0, 0);
+    g.globalCompositeOperation = "source-over";
+    g.clearRect(x0, y0, bw, bh);
+    g.fillStyle = g.strokeStyle = "#fff";
+    holoShape(g, G, 0);
+  }
+  // body: deep at the palm, bright toward the fingertips, a soft sheen on the palm and drifting scanlines
+  hb.globalCompositeOperation = "source-in";
+  hb.fillStyle = grad(hb, [[0, holoDim(C, 0.45)], [0.5, accent], [1, holoMix(C, 0.85)]]);
+  hb.fillRect(x0, y0, bw, bh);
+  hb.globalCompositeOperation = "source-atop";
+  const pc = hv.lerp(P[0], P[9], 0.55), sheen = hb.createRadialGradient(pc.x, pc.y, 0, pc.x, pc.y, span * 0.75);
+  sheen.addColorStop(0, "rgba(255,255,255,0.35)"); sheen.addColorStop(1, "rgba(255,255,255,0)");
+  hb.fillStyle = sheen; hb.fillRect(x0, y0, bw, bh);
+  hb.fillStyle = "rgba(255,255,255,0.16)";
+  for (let y = y0 + ((t / 60) % 4) - 4; y < y1; y += 4) hb.fillRect(x0, y, bw, 1.2);
+  // rim: cut the inside out of the solid, then light it brighter toward the fingertips
+  hr.globalCompositeOperation = "destination-out";
+  holoShape(hr, G, Math.max(1.4, span * 0.017));
+  hr.globalCompositeOperation = "source-in";
+  hr.fillStyle = grad(hr, [[0, accent], [0.6, holoMix(C, 0.6)], [1, "#ffffff"]]);
+  hr.fillRect(x0, y0, bw, bh);
+  // both melt away toward the wrist instead of ending in a hard edge
+  for (const g of [hb, hr]) {
+    g.globalCompositeOperation = "destination-in";
+    g.fillStyle = grad(g, [[0, "rgba(0,0,0,0)"], [1, "rgba(0,0,0,1)"]], fadeA, fadeB);
+    g.fillRect(x0, y0, bw, bh);
+  }
+  const blit = (cv, alpha, blur) => {
+    hg.save(); hg.globalAlpha = alpha; hg.shadowColor = accent; hg.shadowBlur = blur;
+    hg.drawImage(cv, x0 * d, y0 * d, bw * d, bh * d, x0, y0, bw, bh);
+    hg.restore();
+  };
+  blit(holoBody, 0.36, 0);
+  blit(holoRim, 1, 16);
+
+  hg.save();
+  hg.strokeStyle = accent; hg.fillStyle = accent; hg.lineCap = "round";
+  // knuckle creases across each finger
+  hg.globalAlpha = 0.38; hg.lineWidth = Math.max(1, span * 0.008);
+  for (const f of G.fingers) for (let k = 1; k <= 2; k++) {
+    const dir = hv.norm(hv.sub(f.c[k + 1], f.c[k - 1])), across = { x: -dir.y, y: dir.x }, w = f.r[k] * 0.62;
+    hg.beginPath(); hg.moveTo(f.c[k].x - across.x * w, f.c[k].y - across.y * w); hg.lineTo(f.c[k].x + across.x * w, f.c[k].y + across.y * w); hg.stroke();
+  }
+  // fingertips glow; thumb and index brighten and join as a pinch closes
+  const near = Math.max(0, Math.min(1, (0.9 - (s.pinchRatio ?? 1)) / 0.6));
+  const tip = (p, r, a) => {
+    const g = hg.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+    g.addColorStop(0, `rgba(255,255,255,${a})`); g.addColorStop(0.35, holoMix(C, 0.5, a * 0.6)); g.addColorStop(1, holoMix(C, 0, 0));
+    hg.globalAlpha = 1; hg.fillStyle = g; hg.beginPath(); hg.arc(p.x, p.y, r, 0, Math.PI * 2); hg.fill();
+  };
+  for (const fi of [2, 3, 4]) tip(G.fingers[fi].c[3], span * 0.07, 0.35);
+  for (const fi of [0, 1]) tip(G.fingers[fi].c[3], span * (0.08 + 0.05 * near), 0.5 + 0.5 * near);
+  if (near > 0) {
+    const a = G.fingers[0].c[3], b = G.fingers[1].c[3];
+    hg.globalAlpha = near * 0.85; hg.strokeStyle = holoMix(C, 0.85); hg.lineWidth = Math.max(1.2, span * 0.01);
+    hg.shadowColor = accent; hg.shadowBlur = 10;
+    hg.beginPath(); hg.moveTo(a.x, a.y); hg.lineTo(b.x, b.y); hg.stroke();
+  }
+  if (s.pinch) {
+    const m = hv.lerp(G.fingers[0].c[3], G.fingers[1].c[3], 0.5);
+    tip(m, span * 0.2, 1);
+  }
+  hg.restore();
+}
+
 function drawHud(t) {
   hg.clearRect(0, 0, innerWidth, innerHeight);
   const accent = getComputedStyle(document.body).getPropertyValue("--accent").trim() || "#5ef2ff";
+  for (const s of S.cursor) { if (s.present && s.lm) drawHoloHand(s, accent, t); else holoPts[s.i] = null; }
   for (const s of S.cursor) {
     if (!s.present) continue;
     const r = s.pinch ? 9 : 15 + Math.sin(t / 300) * 1.5;
@@ -1603,7 +1767,9 @@ function openSettings(first = false) {
     if (f.micId.value !== (c.voice?.micId || "")) f.micId.value = "";
   });
   f.handsEnabled.checked = c.hands?.enabled !== false;
+  f.gestureFeel.value = c.hands?.feel === "calm" ? "calm" : "normal";
   f.mirrorCam.checked = c.hands?.mirror !== false;
+  f.stageFlip.checked = !!c.hands?.stageFlip;
   HandTracker.cameras().then((cams) => {
     f.cameraId.innerHTML = `<option value="">automatic (prefers Camo / iPad)</option>` + cams.map((m, i) => `<option value="${escapeHtml(m.deviceId)}">${escapeHtml(m.label || `camera ${i + 1}`)}</option>`).join("");
     f.cameraId.value = c.hands?.cameraId || "";
@@ -1662,7 +1828,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
     visuals: { theme: f.theme.value },
     voice: { speak: f.speak.checked, voiceName: f.voiceName.value, sttModel: f.sttModel.value, language: f.language.value, micId: f.micId.value, wakeWord: f.wakeWord.checked, continuous: f.continuous.checked,
       engine: f.engine.value, kokoroVoice: f.kokoroVoice.value, elevenVoice: f.elevenVoice.value.trim() || "onwK4e9ZLuTAKqWW03F9" },
-    hands: { enabled: f.handsEnabled.checked, palmToTalk: f.palmToTalk.checked, cameraId: f.cameraId.value, mirror: f.mirrorCam.checked },
+    hands: { enabled: f.handsEnabled.checked, palmToTalk: f.palmToTalk.checked, cameraId: f.cameraId.value, mirror: f.mirrorCam.checked, stageFlip: f.stageFlip.checked, feel: f.gestureFeel.value },
   };
   if (f.apiKey.value.trim()) patch.apiKey = f.apiKey.value.trim();
   for (const [p, key] of Object.entries(brainDraft.keys)) patch[`${p}Key`] = key; // openaiKey, geminiKey, customKey
@@ -1694,7 +1860,8 @@ function applyConfig(c) {
   voice.elevenFailed = false;
   gestures.palmEnabled = c.hands?.palmToTalk !== false;
   gestures.mirror = c.hands?.mirror !== false;
-  galaxy.setCameraFeed($("#cam"), S.cam, c.hands?.mirror !== false);
+  gestures.calm = c.hands?.feel === "calm";
+  galaxy.setCameraFeed($("#cam"), S.cam, c.hands?.mirror !== false, !!c.hands?.stageFlip);
   document.body.classList.toggle("cam-unmirrored", c.hands?.mirror === false);
   if (themeName(c.visuals?.theme) !== S.theme) setTheme(c.visuals?.theme, { save: false });
   updateChips();

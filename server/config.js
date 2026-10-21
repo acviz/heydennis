@@ -27,7 +27,7 @@ const DEFAULTS = {
     engine: "kokoro", kokoroVoice: "bm_daniel", elevenVoice: "onwK4e9ZLuTAKqWW03F9", elevenModel: "eleven_flash_v2_5",
     language: "en", // "en" (English-only models) | "auto" (detect among `languages`) | one ISO code
     languages: ["en", "ar", "tl", "fr", "ja", "zh"] },
-  hands: { enabled: true, palmToTalk: true, showCamera: true, cameraId: "", mirror: true, camView: "stage" }, // camView: stage | pip | off
+  hands: { enabled: true, palmToTalk: true, showCamera: true, cameraId: "", mirror: true, stageFlip: false, feel: "normal", camView: "stage" }, // feel: normal | calm; camView: stage | pip | off; stageFlip: full-stage camera picture renders upside down on this machine
   visuals: { bloom: true, autoRotate: true, theme: "reactor" }, // theme: reactor | spiral | neural | grid (ui/js/themes.js)
   skillsDisabled: [], // ids of installed skills (~/.dennis/skills) that are switched off
   mcpServers: {}, // MCP servers, same shape as Claude Desktop's: { name: { command, args, env } | { url, headers } }
