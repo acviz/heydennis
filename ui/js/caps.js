@@ -1,5 +1,5 @@
-// The Capabilities panel (skills, minions, MCP connections, document skills) and the
-// small MINIONS widget that shows who's out working.
+// The Capabilities panel (skills, minions, MCP connections, document skills, messaging) and
+// the small MINIONS widget that shows who's out working.
 import { api } from "./api.js";
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -31,6 +31,25 @@ export class Caps {
     $("#mcp-json").oninput = () => (this.mcpDirty = true);
     // documents
     this.el.querySelectorAll("[name=docSkill], #docs-on").forEach((c) => (c.onchange = () => this.saveDocs()));
+    // messaging
+    const pane = this.el.querySelector("[data-pane=msg]");
+    pane.addEventListener("input", (e) => { if (!e.target.matches("[type=password]")) this.msgDirty = true; });
+    pane.addEventListener("change", (e) => { if (!e.target.matches("[type=password]")) this.msgDirty = true; if (e.target.id === "wa-tunnel" && this.msg) this.renderMessaging(this.msg); });
+    $("#msg-save").onclick = () => this.saveMessaging();
+    $("#wa-copy").onclick = () => this.copy($("#wa-verify").textContent);
+    $("#wa-copy-url").onclick = () => this.copy($("#wa-callback").textContent);
+    $("#wa-check").onclick = async () => { await this.saveMessaging(true); const r = await api.remoteDo({ action: "wa-check" }).catch((e) => ({ ok: false, error: e.message })); this.h.toast(r.ok ? "The tunnel reaches D.E.N.N.I.S. - paste the callback URL and verify token into Meta" : r.error, !r.ok); };
+    $("#wa-test").onclick = () => this.test("whatsapp");
+    $("#teams-test").onclick = () => this.test("teams");
+    $("#teams-signin").onclick = () => this.teamsSignIn();
+    $("#teams-signout").onclick = () => api.remoteDo({ action: "teams-signout" }).then(() => this.loadMessaging()).catch((e) => this.h.toast(e.message, true));
+    $("#teams-inbox-suggest").onclick = async () => {
+      const r = await api.remoteDo({ action: "inbox-suggest" }).catch(() => ({}));
+      if (!r.folder) return this.h.toast("I can't find OneDrive on this computer", true);
+      $("#teams-inbox").value = r.folder;
+      this.msgDirty = true;
+      this.h.toast(`In OneDrive that's the folder ${r.onedrivePath} - point the Workflow's "Create file" there`);
+    };
     setInterval(() => { if (this.running().length) this.renderWidget(); }, 1000);
   }
 
@@ -38,7 +57,7 @@ export class Caps {
   async open(tab = "skills") {
     this.el.classList.add("show");
     this.tab(tab);
-    await Promise.all([this.loadSkills(), this.loadMinions(), this.loadMcp()]).catch((e) => this.h.toast(e.message, true));
+    await Promise.all([this.loadSkills(), this.loadMinions(), this.loadMcp(), this.loadMessaging()]).catch((e) => this.h.toast(e.message, true));
     const cfg = this.h.getConfig() || {};
     $("#docs-on").checked = cfg.docSkills?.enabled !== false;
     const on = new Set(cfg.docSkills?.skills || ["docx", "pptx", "xlsx", "pdf"]);
@@ -200,6 +219,125 @@ export class Caps {
     this.h.saveSettings({ docSkills: { enabled: $("#docs-on").checked && skills.length > 0, skills } });
   }
 
+  // ---------------------------------------------------------------- messaging (WhatsApp, Teams)
+  async loadMessaging() {
+    const st = await api.remote();
+    this.renderMessaging(st);
+    if (st.teams.signedIn && !this.teamsChats) this.loadChats();
+  }
+  async loadChats() {
+    const r = await api.remoteDo({ action: "teams-chats" }).catch((e) => ({ ok: false, error: e.message }));
+    if (!r.ok) { this.h.toast(`Teams: ${r.error}`, true); return; }
+    this.teamsChats = r.chats;
+    this.renderChats();
+  }
+  renderChats() {
+    const sel = $("#teams-chat"), cur = this.msg?.teams.chatId || "";
+    const chats = this.teamsChats || [];
+    sel.innerHTML = `<option value="">${this.msg?.teams.signedIn ? "choose a chat..." : "sign in first"}</option>` +
+      [...(cur && !chats.some((c) => c.id === cur) ? [{ id: cur, name: this.msg.teams.chatName || "the chat you chose" }] : []), ...chats]
+        .map((c) => `<option value="${esc(c.id)}" ${c.id === cur ? "selected" : ""}>${esc(c.name)}</option>`).join("");
+  }
+  renderMessaging(st) {
+    this.msg = st;
+    const wa = st.whatsapp, tm = st.teams, f = st.forward;
+    if (!this.msgDirty) {
+      $("#wa-on").checked = !!wa.enabled;
+      $("#wa-phone").value = wa.phoneNumberId || "";
+      $("#wa-allow").value = (wa.allow || []).join(", ");
+      $("#wa-url").value = wa.publicUrl || "";
+      $("#wa-tunnel").value = wa.tunnel === "cloudflared" ? "cloudflared" : "own";
+      $("#wa-appid").value = wa.appId || "";
+      $("#wa-port").value = wa.port || 47820;
+      $("#wa-template").value = wa.template || "";
+      $("#teams-on").checked = !!tm.enabled;
+      $("#teams-client").value = tm.clientId || "";
+      $("#teams-tenant").value = tm.tenant || "organizations";
+      $("#teams-inbox").value = tm.inboxFolder || "";
+      $("#teams-inbox-prefix").checked = tm.inboxPrefix !== false;
+      this.el.querySelectorAll("[data-fwd]").forEach((c) => (c.checked = !!f[c.dataset.fwd]));
+      $("#fwd-mins").value = f.awayMinutes || 10;
+      $("#fwd-via").value = f.via || "whatsapp";
+      this.renderChats();
+    }
+    const saved = (el, on, key) => { el.innerHTML = on ? `· SAVED <button type="button" class="forget" title="Forget it">&times;</button>` : ""; const b = el.querySelector(".forget"); if (b) b.onclick = (e) => { e.preventDefault(); this.forget(key); }; };
+    saved($("#wa-token-state"), wa.hasToken, "waToken");
+    saved($("#wa-secret-state"), wa.hasSecret, "waAppSecret");
+    saved($("#teams-hook-state"), tm.hasWebhook, "teamsWebhook");
+    $("#wa-callback").textContent = `${wa.publicUrl || "https://<your tunnel's address>"}/whatsapp`;
+    const quick = $("#wa-tunnel").value === "cloudflared";
+    $("#wa-url-row").hidden = quick; // the quick tunnel finds its own address
+    $("#wa-tunnel-state").textContent = !quick ? `yours - point it at http://localhost:${wa.port}`
+      : wa.cloudflared === false ? "cloudflared isn't installed yet (see the README, under Messaging)"
+      : wa.tunnelState || (wa.enabled ? "starting..." : "starts when WhatsApp is switched on");
+    $("#wa-verify").textContent = wa.verifyToken || "";
+    const dot = (el, cls) => { el.className = `dot ${cls}`; };
+    // WhatsApp: what's missing, or how it's going
+    let w;
+    if (!wa.enabled) w = ["", "off"];
+    else if (wa.error) w = ["err", wa.error];
+    else if (!wa.hasToken || !wa.phoneNumberId || !wa.allow?.length) w = ["warn", "fill in the phone number ID, your number and the access token"];
+    else if (!wa.hasSecret) w = ["warn", "add the App secret"];
+    else if (!wa.listening) w = ["err", "the listener isn't running"];
+    else if (!wa.lastInbound) w = ["warn", `listening on port ${wa.port} - message your D.E.N.N.I.S. number to start`];
+    else w = ["ok", `connected · last message ${new Date(wa.lastInbound).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" })}${wa.windowOpen ? "" : " · 24 h window closed: updates wait for your next message"}${wa.held ? ` · ${wa.held} waiting` : ""}`];
+    dot($("#wa-dot"), w[0]);
+    $("#wa-status").textContent = w[1];
+    // Teams
+    let t;
+    if (!tm.enabled) t = ["", "off"];
+    else if (tm.signin) t = ["warn", "waiting for you to sign in..."];
+    else if (tm.error) t = ["err", tm.error];
+    else if (tm.chatReady && tm.polling) t = ["ok", `watching "${tm.chatName || "your chat"}"${tm.account ? ` as ${tm.account}` : ""}`];
+    else if (tm.signedIn && !tm.chatId) t = ["warn", `signed in${tm.account ? ` as ${tm.account}` : ""} - pick the chat below, then save`];
+    else if (tm.hasWebhook && tm.inboxReady) t = tm.inbox?.error ? ["err", tm.inbox.error] : ["ok", `two-way: messages through your OneDrive inbox${tm.inbox?.lastAt ? ` (last ${new Date(tm.inbox.lastAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })})` : ""}, replies through your Workflow`];
+    else if (tm.hasWebhook) t = ["ok", "updates only, through your Workflow"];
+    else if (!tm.clientId) t = ["warn", "add your app registration's client ID, then sign in"];
+    else t = ["warn", "sign in to Teams"];
+    dot($("#teams-dot"), t[0]);
+    $("#teams-status").textContent = t[1];
+    $("#teams-signout").hidden = !tm.signedIn;
+    $("#teams-inbox-row").hidden = !tm.inboxFolder;
+    $("#teams-inbox-state").textContent = !tm.inboxFolder ? "" : tm.inbox?.error ? tm.inbox.error : tm.inbox?.running ? `watching - ${tm.inbox.handled} message${tm.inbox.handled === 1 ? "" : "s"} handled${tm.inbox.ignored ? `, ${tm.inbox.ignored} notes skipped (no "Dennis")` : ""}` : !tm.hasWebhook ? "needs the Workflow URL above for his replies" : "starts when Teams is switched on";
+    $("#teams-signin").textContent = tm.signedIn ? "SIGN IN AGAIN" : "SIGN IN TO TEAMS";
+    $("#teams-code").innerHTML = tm.signin ? `Open <a href="${esc(tm.signin.url)}" target="_blank" rel="noopener">${esc(tm.signin.url)}</a> and enter the code <b>${esc(tm.signin.userCode)}</b>` : "";
+  }
+  messagingPatch() {
+    const chat = $("#teams-chat");
+    const patch = { remote: {
+      whatsapp: { enabled: $("#wa-on").checked, phoneNumberId: $("#wa-phone").value.trim(), allow: $("#wa-allow").value, port: +$("#wa-port").value || 47820, template: $("#wa-template").value.trim(),
+        tunnel: $("#wa-tunnel").value, appId: $("#wa-appid").value.trim(), ...($("#wa-tunnel").value === "own" ? { publicUrl: $("#wa-url").value.trim() } : {}) },
+      teams: { enabled: $("#teams-on").checked, clientId: $("#teams-client").value.trim(), tenant: $("#teams-tenant").value.trim() || "organizations", chatId: chat.value, chatName: chat.value ? chat.selectedOptions[0]?.textContent || "" : "",
+        inboxFolder: $("#teams-inbox").value.trim(), inboxPrefix: $("#teams-inbox-prefix").checked },
+      forward: { ...Object.fromEntries([...this.el.querySelectorAll("[data-fwd]")].map((c) => [c.dataset.fwd, c.checked])), awayMinutes: Math.max(1, +$("#fwd-mins").value || 10), via: $("#fwd-via").value },
+    } };
+    for (const [id, key] of [["#wa-token", "waToken"], ["#wa-secret", "waAppSecret"], ["#teams-hook", "teamsWebhook"]]) { const v = $(id).value.trim(); if (v) patch[key] = v; }
+    return patch;
+  }
+  async saveMessaging(quiet = false) {
+    await this.h.saveSettings(this.messagingPatch());
+    for (const id of ["#wa-token", "#wa-secret", "#teams-hook"]) $(id).value = "";
+    this.msgDirty = false;
+    await this.loadMessaging().catch(() => {});
+    if (!quiet) this.h.toast("Messaging saved");
+  }
+  async forget(key) { await this.h.saveSettings({ [key]: "" }); await this.loadMessaging().catch(() => {}); this.h.toast("Forgotten"); }
+  async test(channel) {
+    await this.saveMessaging(true);
+    const r = await api.remoteDo({ action: "test", channel }).catch((e) => ({ ok: false, error: e.message }));
+    this.h.toast(r.ok ? r.text : r.error, !r.ok);
+  }
+  async teamsSignIn() {
+    await this.saveMessaging(true); // the client ID has to be saved first
+    const r = await api.remoteDo({ action: "teams-signin" }).catch((e) => ({ ok: false, error: e.message }));
+    if (!r.ok) return this.h.toast(r.error, true);
+    this.teamsChats = null;
+    await this.loadMessaging().catch(() => {});
+  }
+  async copy(text) {
+    try { await navigator.clipboard.writeText(text); this.h.toast("Copied"); } catch { this.h.toast("Couldn't reach the clipboard - select it and copy", true); }
+  }
+
   // ---------------------------------------------------------------- live events
   /** Returns the run when a minion has just come back (so the app can brief you). */
   onEvent(ev) {
@@ -211,6 +349,11 @@ export class Caps {
       if (prev?.status === "running" && ev.run.status !== "running") return ev.run;
     } else if (ev.type === "minions" && this.isOpen) this.renderDefs(ev.definitions);
     else if (ev.type === "mcp" && this.isOpen) this.renderMcp(ev.servers);
+    else if (ev.type === "remote_status" && this.isOpen) {
+      const wasSignedIn = this.msg?.teams.signedIn;
+      this.renderMessaging(ev.status);
+      if (ev.status.teams.signedIn && !wasSignedIn) { this.teamsChats = null; this.loadChats(); this.h.toast("Signed in to Teams - now pick the chat"); }
+    }
     return null;
   }
 }

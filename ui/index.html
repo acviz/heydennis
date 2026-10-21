@@ -213,7 +213,7 @@
   <div id="caps" class="modal">
     <div class="glass box wide caps">
       <h2>CAPABILITIES</h2>
-      <nav class="tabs"><button type="button" data-tab="skills">SKILLS</button><button type="button" data-tab="minions">MINIONS</button><button type="button" data-tab="mcp">CONNECTED APPS</button><button type="button" data-tab="docs">DOCUMENTS</button></nav>
+      <nav class="tabs"><button type="button" data-tab="skills">SKILLS</button><button type="button" data-tab="minions">MINIONS</button><button type="button" data-tab="mcp">CONNECTED APPS</button><button type="button" data-tab="docs">DOCUMENTS</button><button type="button" data-tab="msg">MESSAGING</button></nav>
 
       <section data-pane="skills">
         <p class="hint">Packaged know-how in the same SKILL.md format as Claude's skills: a folder with instructions and any reference files. D.E.N.N.I.S. sees each skill's description and reads the full instructions only when a request needs it. Scripts inside a skill are never run on this computer.</p>
@@ -257,6 +257,64 @@
           <label class="check"><input type="checkbox" name="docSkill" value="pdf"> PDF</label>
         </div>
         <p class="hint">He builds the file in Anthropic's cloud sandbox, then saves it into your folders once you approve. The sandbox can't see your files; he brings in what's needed. Sandbox time is billed with your Claude API usage. Try "make a one-page call sheet for tomorrow as a Word doc" or "turn this shot list into a PowerPoint".</p>
+      </section>
+
+      <section data-pane="msg" hidden>
+        <p class="hint">Message D.E.N.N.I.S. from your phone and he answers there: same conversation, same tools, same rules. Only you get through. Changes to your files still need your yes (he asks in the chat), and "stop" cancels what he's doing. He answers while this computer is on and he's running. Step-by-step setup: README, under Messaging.</p>
+
+        <div class="msgcard">
+          <h4><i class="dot" id="wa-dot"></i>WHATSAPP<small id="wa-status"></small></h4>
+          <div class="grid">
+            <label class="check span2"><input type="checkbox" id="wa-on"> Connect WhatsApp (Meta's official WhatsApp Business Platform)</label>
+            <label>Phone number ID<input id="wa-phone" placeholder="Meta app: WhatsApp, API Setup"></label>
+            <label>Your WhatsApp number<input id="wa-allow" placeholder="with country code, e.g. 971501234567"></label>
+            <label>Access token <span class="sv" id="wa-token-state"></span><input id="wa-token" type="password" autocomplete="off" placeholder="paste it here - kept encrypted"></label>
+            <label>App secret <span class="sv" id="wa-secret-state"></span><input id="wa-secret" type="password" autocomplete="off" placeholder="Meta app: App settings, Basic"></label>
+            <label>Tunnel<select id="wa-tunnel"><option value="cloudflared">Cloudflare quick tunnel, run by D.E.N.N.I.S. (free, no account)</option><option value="own">My own tunnel (ngrok, a named Cloudflare tunnel...)</option></select></label>
+            <label>Meta App ID (so he can update the callback URL)<input id="wa-appid" placeholder="App settings, Basic: App ID"></label>
+            <label id="wa-url-row">Tunnel's public address<input id="wa-url" placeholder="e.g. https://my-dennis.ngrok-free.app"></label>
+            <label>Webhook port (the tunnel points here)<input id="wa-port" type="number" min="1024" max="65535"></label>
+            <label class="span2">Updates after 24 hours of quiet: an approved template (optional)<input id="wa-template" placeholder="template name, with one {{1}} in its body - leave blank and updates wait for your next message"></label>
+          </div>
+          <div class="kv"><span>TUNNEL</span><code id="wa-tunnel-state"></code></div>
+          <div class="kv"><span>CALLBACK URL</span><code id="wa-callback"></code><button type="button" id="wa-copy-url">COPY</button></div>
+          <div class="kv"><span>VERIFY TOKEN</span><code id="wa-verify"></code><button type="button" id="wa-copy">COPY</button></div>
+          <div class="row"><button type="button" id="wa-check">CHECK TUNNEL</button><button type="button" id="wa-test">SEND A TEST MESSAGE</button></div>
+        </div>
+
+        <div class="msgcard">
+          <h4><i class="dot" id="teams-dot"></i>MICROSOFT TEAMS<small id="teams-status"></small></h4>
+          <div class="grid">
+            <label class="check span2"><input type="checkbox" id="teams-on"> Connect Teams</label>
+            <label>Application (client) ID<input id="teams-client" placeholder="from your app registration in Entra ID"></label>
+            <label>Directory (tenant) ID<input id="teams-tenant" placeholder="organizations"></label>
+          </div>
+          <div class="row"><button type="button" id="teams-signin">SIGN IN TO TEAMS</button><button type="button" id="teams-signout">SIGN OUT</button></div>
+          <div id="teams-code"></div>
+          <div class="grid">
+            <label class="span2">The chat he watches and answers in<select id="teams-chat"><option value="">sign in first</option></select></label>
+            <label class="span2">Or, for updates only: a Teams Workflow URL <span class="sv" id="teams-hook-state"></span><input id="teams-hook" type="password" autocomplete="off" placeholder="Workflows: &quot;post to a chat or channel when a webhook request is received&quot;"></label>
+            <label class="span2">...and to message him without IT: the OneDrive inbox folder a second Workflow saves your messages into<span class="pair"><input id="teams-inbox" placeholder="e.g. C:\Users\you\OneDrive - Company\Dennis\Inbox"><button type="button" id="teams-inbox-suggest">SUGGEST</button></span></label>
+            <label class="check span2"><input type="checkbox" id="teams-inbox-prefix"> Only messages that start with "Dennis" (so your other notes to yourself stay yours)</label>
+          </div>
+          <div class="kv" id="teams-inbox-row" hidden><span>INBOX</span><code id="teams-inbox-state"></code></div>
+          <div class="row"><button type="button" id="teams-test">SEND A TEST MESSAGE</button></div>
+        </div>
+
+        <div class="msgcard">
+          <h4>SEND TO MY PHONE</h4>
+          <div class="checks">
+            <label class="check"><input type="checkbox" data-fwd="reminders"> Reminders</label>
+            <label class="check"><input type="checkbox" data-fwd="minions"> Minion reports</label>
+            <label class="check"><input type="checkbox" data-fwd="watcher"> New files, low disk space</label>
+            <label class="check"><input type="checkbox" data-fwd="approvals"> Minions asking for approval</label>
+          </div>
+          <div class="checks">
+            <label class="check"><input type="checkbox" data-fwd="awayOnly"> Only while I'm away from the computer (no activity for <input id="fwd-mins" class="tiny" type="number" min="1" max="240"> minutes)</label>
+            <label class="check">Send updates via <select id="fwd-via" class="tiny"><option value="whatsapp">WhatsApp</option><option value="teams">Teams</option><option value="both">both</option></select></label>
+          </div>
+        </div>
+        <div class="row end"><button type="button" id="msg-save" class="yes">SAVE &amp; CONNECT</button></div>
       </section>
 
       <div class="row end"><button type="button" id="caps-close" class="yes">DONE</button></div>

@@ -260,6 +260,62 @@ With document skills on (the Documents tab), he can make real Word, PowerPoint, 
 - Sandbox time is billed with your Claude API usage.
 - If your API key can't use the sandbox, he switches document skills off by himself and says so.
 
+## Messaging: WhatsApp and Teams
+
+Message D.E.N.N.I.S. from your phone and he answers there. It's the same conversation, with the same tools and the same rules: "what's new in Renders?", "move the client's PDFs into Deliveries", "send Scout to find a 2.6 mm LED panel", "message me when the renders land". Set it up under **Capabilities → Messaging**.
+
+- **Only you.** Messages from any other number or person are ignored.
+- **Same safety rules.** Anything that changes your files still needs your yes. He asks in the chat: tap **Allow** (WhatsApp) or reply **YES** / **NO**. "Stop" cancels what he's doing.
+- **Updates come to you.** Reminders, finished minions, new files landing, low disk space, and minions asking for approval reach your phone. By default that only happens while you're away from the computer: no activity for 10 minutes, or no window open. He can also message you himself when you ask him to ("text me the summary").
+- **What you say on your phone shows in COMMS too,** so the conversation is in one place.
+- **Your computer must be on** with D.E.N.N.I.S. running for him to answer. Set Windows not to sleep while you rely on it.
+
+### WhatsApp (Meta's official WhatsApp Business Platform)
+
+Setup takes about half an hour, once.
+
+1. **Make a Meta app.** At [developers.facebook.com/apps](https://developers.facebook.com/apps), create an app with the WhatsApp use case. Meta gives it a free test number.
+2. **Note the Phone number ID.** In the app's WhatsApp → API Setup, note the **Phone number ID**. Under *To*, add your own WhatsApp number and confirm it with the code Meta sends.
+3. **Get an access token.** The token on API Setup works for 24 hours, which is fine for a first try. For keeps, go to Meta Business Settings → System users, add one, give it your app and WhatsApp account, and generate a token that never expires. It needs the `whatsapp_business_messaging` and `whatsapp_business_management` permissions.
+4. **Find the App ID and App secret.** Both are in App settings → Basic. D.E.N.N.I.S. uses the secret to check that every incoming call really comes from Meta, and the ID to keep the webhook pointed at him.
+5. **Choose a tunnel.** Meta needs a public HTTPS address to deliver your messages to. The tunnel only reaches a small listener that answers `/whatsapp` and checks Meta's signature on every call. The rest of D.E.N.N.I.S. stays private on `127.0.0.1`.
+   - **Cloudflare quick tunnel (recommended).** It's free and needs no account. Install Cloudflare's small tunnel app once:
+     ```bash
+     winget install --id Cloudflare.cloudflared
+     ```
+     Then choose *Cloudflare quick tunnel* in D.E.N.N.I.S. and he runs it himself. The tunnel's address changes each time it starts, and D.E.N.N.I.S. tells Meta the new one through your App ID, so it keeps working after restarts.
+   - **Your own tunnel.** For example, [ngrok](https://ngrok.com) with its free static domain: `ngrok http --url=YOUR-NAME.ngrok-free.app 47820`. Choose *My own tunnel* in D.E.N.N.I.S. and enter its address.
+   - **On a company network:** many company firewalls block tunnels outright. That's a deliberate security control, so don't try to get around it. Ask your IT team, or run WhatsApp from a computer on a network that allows it. If the Messaging tab says a firewall is blocking tunnels, use **Teams** on that computer instead: it needs no tunnel, because D.E.N.N.I.S. only talks out to Microsoft.
+6. **Fill in D.E.N.N.I.S.** In Capabilities → Messaging → WhatsApp:
+   - tick *Connect WhatsApp*
+   - paste the Phone number ID, your number, the token, the App ID and the App secret
+   - choose the tunnel (and, for your own, enter its address)
+   - click **SAVE & CONNECT**, then **CHECK TUNNEL**
+7. **Connect Meta to D.E.N.N.I.S. (once).** Back in Meta, go to WhatsApp → Configuration → Webhook → Edit:
+   - paste the **Callback URL** and **Verify token** that D.E.N.N.I.S. shows, then click Verify and save
+   - under webhook fields, subscribe to **messages**
+   - with the Cloudflare quick tunnel, he updates the callback URL himself from then on
+8. **Say hello.** Message the test number from your phone, and he answers.
+
+**The 24-hour rule.** WhatsApp lets a business write to you freely only within 24 hours of your last message. After a quiet day, his updates wait until you next write, then arrive together under "While you were away". If you want them straight away, create a Utility template in WhatsApp Manager → Message templates, for example *dennis_update* with the body "Update from D.E.N.N.I.S.: {{1}}". Once Meta approves it, enter its name in D.E.N.N.I.S.; template messages are charged by Meta. To use a real number instead of the test number, add one in WhatsApp Manager.
+
+### Microsoft Teams
+
+There are two ways to connect Teams:
+
+**A. Two-way, in a chat (recommended).** He signs in as you once, and watches one chat every few seconds. The best chat is your "chat with yourself". No public address is needed.
+
+1. At [entra.microsoft.com](https://entra.microsoft.com), go to App registrations → **New registration**. Name it "D.E.N.N.I.S.", choose this organisation only, and register it.
+2. Copy the **Application (client) ID** and the **Directory (tenant) ID**.
+3. Under Authentication, turn on **Allow public client flows** and save.
+4. Under API permissions, add Microsoft Graph → **Delegated** → `Chat.ReadWrite` and `User.Read`. If your company requires it, ask IT to grant admin consent.
+5. In D.E.N.N.I.S. (Capabilities → Messaging → Teams), tick *Connect Teams*, paste both IDs and click **SIGN IN TO TEAMS**. Open the link, enter the code, and sign in with your work account. No password passes through D.E.N.N.I.S.
+6. Pick the chat (*Notes to self* when your Teams has it), then click **SAVE & CONNECT**. Write to him in that chat.
+
+His replies appear in the chat as messages from you, marked "🤖 D.E.N.N.I.S.", so use a chat nobody else is in. On many company accounts, registering an app needs IT. If that's not possible, use B.
+
+**B. Updates only, through a Teams Workflow.** In Teams, open a chat or channel, then ⋯ → **Workflows** → *Post to a chat when a webhook request is received* (or the channel version). Copy the URL into D.E.N.N.I.S.'s *Workflow URL* field and click **SEND A TEST MESSAGE**. You'll get his updates there, but you can't reply to him through it.
+
 ## Safety and privacy
 
 - **Folders you choose, nothing else.** Every path, whether it comes from you or from Claude, is resolved (symlinks included) and must sit inside a mapped folder.
@@ -271,7 +327,7 @@ With document skills on (the Documents tab), he can make real Word, PowerPoint, 
 - **Your screen is only captured when you ask** ("look at my screen"), and the screen flashes when it happens.
 - **The local server is locked down.** It listens on `127.0.0.1` only, rejects foreign `Host` headers, and requires a session cookie (HttpOnly, SameSite=Strict) plus a custom header for any change, so other websites can't drive it.
 
-Your data lives in `~/.dennis/`: `config.json` (settings), `memory.md` (what it remembers, which you can edit), `reminders.json`, `notes/` (meeting transcripts), `diagrams/` (saved diagrams), `undone/` (whatever undo took away), and an index cache. Reinstalling or updating the app never touches it.
+Your data lives in `~/.dennis/`: `config.json` (settings; the API keys and messaging tokens in it are encrypted by your operating system), `memory.md` (what it remembers, which you can edit), `reminders.json`, `notes/` (meeting transcripts), `diagrams/` (saved diagrams), `undone/` (whatever undo took away), `remote-state.json` (when you last messaged him, and updates waiting for WhatsApp's window), and an index cache. Reinstalling or updating the app never touches it.
 
 ---
 

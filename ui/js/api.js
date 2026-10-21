@@ -43,6 +43,9 @@ export const api = {
   undo: (count = 1) => req("POST", "/api/undo", { count }),
   notes: (title, text) => req("POST", "/api/notes", { title, text }),
   uiReply: (id, result) => req("POST", "/api/ui-reply", { id, result }),
+  remote: () => req("GET", "/api/remote"),
+  remoteDo: (body) => req("POST", "/api/remote", body),
+  presence: () => req("POST", "/api/presence", {}),
   saveDiagram: (title, svg, png) => req("POST", "/api/diagram-save", { title, svg, png }),
 
   /** Server-sent events for background status (index progress). */

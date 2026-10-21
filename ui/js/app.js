@@ -407,6 +407,23 @@ $("#wintabs").addEventListener("wheel", (e) => {
   cycleWindows((e.deltaY || e.deltaX) > 0 ? 1 : -1);
 }, { passive: false });
 galaxy.winRenderer.domElement.addEventListener("click", (e) => { if (e.target === galaxy.winRenderer.domElement) setWindowMax(false); }); // click outside an expanded window
+// ---- messaging: what you and he say over WhatsApp / Teams shows in COMMS too (not spoken aloud)
+function remoteMsg(ev) {
+  const el = addMsg(ev.dir === "in" ? "user" : ev.update ? "minion" : "bot", ev.text);
+  el.classList.add("remote");
+  el.dataset.who = ev.dir === "in" ? `YOU · ${String(ev.label || ev.channel).toUpperCase()}` : `${ev.update ? "UPDATE" : "REPLY"} · ${String(ev.label || ev.channel).toUpperCase()}`;
+}
+// you're at the computer: the server holds updates back from your phone meanwhile
+let presenceAt = 0;
+function markPresent() {
+  const now = Date.now();
+  if (now - presenceAt < 60_000) return;
+  presenceAt = now;
+  api.presence().catch(() => {});
+}
+for (const type of ["pointerdown", "keydown", "wheel"]) addEventListener(type, markPresent, { passive: true, capture: true });
+markPresent();
+
 // ---- diagrams (show_diagram): Mermaid drawn into a window of its own, styled like the HUD
 let diagramSeq = 0;
 async function showDiagram(ev) {
@@ -614,6 +631,7 @@ async function ask(text, { input = "text", selected, silent = false } = {}) {
     if (YES.test(text)) return answerApproval(a.id, true);
     if (NO.test(text)) return answerApproval(a.id, false);
   }
+  if (input !== "event") markPresent();
   if (input !== "event" && isStopPhrase(text)) return hush();
   if (input !== "event" && isRepeatPhrase(text)) return sayAgain();
   if (input !== "event") {
@@ -2140,7 +2158,10 @@ function bootSequence(st) {
   updateIndexChip(st.index);
   api.events((ev) => {
     if (ev.type === "index") updateIndexChip(ev.status);
-    else if (ev.type === "approval" && ev.runId) showApproval(ev); // a minion asking
+    else if (ev.type === "approval" && (ev.runId || ev.remote)) showApproval(ev); // a minion asking, or a request from your phone
+    else if (ev.type === "approval_done" && ev.remote) closeApproval(ev.id);
+    else if (ev.type === "remote") remoteMsg(ev);
+    else if (ev.type === "ui" && ev.remote) handleUi(ev); // something he did from a phone conversation
     else if (ev.type === "reminder") reminderDue(ev.reminder, ev.missed);
     else if (ev.type === "watch") watchNotice(ev.notice);
     else if (ev.type === "approval_done" && ev.runId) closeApproval(ev.id);

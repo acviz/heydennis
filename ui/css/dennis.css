@@ -243,6 +243,29 @@ body.busy #send { display: none; }
 .grid label .lbl-act button { padding: 3px 9px; font-size: 9.5px; }
 #brain-note { color: var(--amber); line-height: 1.5; }
 #eleven-state.warn { color: var(--amber); }
+/* the Messaging tab */
+.msgcard { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px 4px; margin: 0 0 12px; background: rgba(4, 10, 15, .45); }
+.msgcard h4 { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; font-family: var(--mono); font-weight: normal; font-size: 11px; letter-spacing: .24em; color: var(--cyan-2); }
+.msgcard h4 small { margin-left: auto; font-family: var(--sans); font-size: 12px; letter-spacing: 0; color: var(--muted); text-align: right; }
+.msgcard .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #4b5862; }
+.msgcard .dot.ok { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.msgcard .dot.warn { background: var(--amber); }
+.msgcard .dot.err { background: var(--red); }
+.msgcard .grid { margin-bottom: 4px; }
+.msgcard .kv { display: flex; align-items: center; gap: 12px; margin: 10px 0 0; font-size: 12.5px; min-width: 0; }
+.msgcard .kv span { flex: none; width: 112px; font-family: var(--mono); font-size: 10px; letter-spacing: .2em; color: var(--muted); }
+.msgcard .kv code { flex: 1; min-width: 0; font-family: var(--mono); color: var(--cyan-2); user-select: all; overflow-wrap: anywhere; }
+.msgcard .kv button { padding: 4px 10px; font-size: 9.5px; }
+.msgcard .row { margin-top: 12px; margin-bottom: 10px; }
+.msgcard .sv { color: var(--green); letter-spacing: .1em; }
+.msgcard .sv .forget { padding: 0 6px; margin-left: 4px; border: 0; background: none; color: var(--muted); font-size: 13px; line-height: 1; }
+.msgcard .sv .forget:hover { color: var(--red); }
+#teams-code { font-size: 13px; color: var(--text); margin: -2px 0 10px; }
+#teams-code b { font-family: var(--mono); font-size: 15px; letter-spacing: .16em; color: var(--amber); }
+#teams-code a { color: var(--cyan-2); }
+#caps input.tiny, #caps select.tiny { width: auto; max-width: 120px; padding: 4px 8px; margin: 0 4px; border-radius: 8px; border: 1px solid var(--line); background: rgba(0, 0, 0, .35); color: #eafcff; font: inherit; }
+#caps input.tiny { width: 64px; }
+#msgs .remote::before { content: attr(data-who); display: block; font-family: var(--mono); font-size: 9px; letter-spacing: .2em; color: var(--muted); margin-bottom: 3px; }
 .grid .pair { display: flex; align-items: center; gap: 8px; text-transform: none; letter-spacing: 0; }
 .grid .pair input { flex: 1; color-scheme: dark; }
 .grid select option { background: #071520; }

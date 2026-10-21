@@ -29,6 +29,12 @@ const DEFAULTS = {
     languages: ["en", "ar", "tl", "fr", "ja", "zh"] },
   hands: { enabled: true, palmToTalk: true, showCamera: true, cameraId: "", mirror: true, stageFlip: false, feel: "normal", camView: "stage" }, // feel: normal | calm; camView: stage | pip | off; stageFlip: full-stage camera picture renders upside down on this machine
   visuals: { bloom: true, autoRotate: true, theme: "reactor" }, // theme: reactor | spiral | neural | grid (ui/js/themes.js)
+  // messaging (remote.js): WhatsApp and Teams; their tokens are secrets, stored apart (setSecret)
+  remote: {
+    whatsapp: { enabled: false, phoneNumberId: "", allow: [], port: 47820, apiVersion: "v23.0", template: "", templateLang: "en", verifyToken: "", publicUrl: "", tunnel: "own", appId: "" },
+    teams: { enabled: false, tenant: "organizations", clientId: "", chatId: "", chatName: "", pollSeconds: 6, account: "", inboxFolder: "", inboxPrefix: true },
+    forward: { reminders: true, minions: true, watcher: true, approvals: true, awayOnly: true, awayMinutes: 10, via: "whatsapp" },
+  },
   skillsDisabled: [], // ids of installed skills (~/.dennis/skills) that are switched off
   mcpServers: {}, // MCP servers, same shape as Claude Desktop's: { name: { command, args, env } | { url, headers } }
   docSkills: { enabled: true, skills: ["docx", "pptx", "xlsx", "pdf"] }, // Anthropic's document skills, in the cloud sandbox
@@ -116,7 +122,7 @@ export class Config {
   /** Apply a partial update from the settings screen. Only known keys are accepted. */
   update(patch = {}) {
     const allowed = ["userName", "address", "personality", "model", "effort", "webSearch", "permissionMode", "roots", "showHidden", "voice", "hands", "visuals",
-      "skillsDisabled", "mcpServers", "docSkills", "minions", "briefMinions", "provider", "brains", "location", "briefOnBoot", "watch"];
+      "skillsDisabled", "mcpServers", "docSkills", "minions", "briefMinions", "provider", "brains", "location", "briefOnBoot", "watch", "remote"];
     for (const k of allowed) {
       if (!(k in patch)) continue;
       if (k === "roots") {
@@ -138,6 +144,19 @@ export class Config {
         this.data.location = patch.location && typeof patch.location === "object" ? patch.location : null; // geocoded by the server
       } else if (k === "provider") {
         if (["anthropic", "openai", "gemini", "ollama", "custom"].includes(patch.provider)) this.data.provider = patch.provider;
+      } else if (k === "remote") {
+        const r = patch.remote && typeof patch.remote === "object" ? structuredClone(patch.remote) : {};
+        if (r.whatsapp) {
+          if ("allow" in r.whatsapp) r.whatsapp.allow = (Array.isArray(r.whatsapp.allow) ? r.whatsapp.allow : String(r.whatsapp.allow || "").split(/[,;\n]+/)).map((n) => String(n).replace(/\D/g, "")).filter((n) => n.length >= 6).slice(0, 5);
+          if ("tunnel" in r.whatsapp && !["own", "cloudflared"].includes(r.whatsapp.tunnel)) r.whatsapp.tunnel = "own";
+          if ("appId" in r.whatsapp) r.whatsapp.appId = String(r.whatsapp.appId || "").replace(/\D/g, "");
+          if ("port" in r.whatsapp) r.whatsapp.port = Math.min(65535, Math.max(1024, Math.round(+r.whatsapp.port) || 47820));
+          if ("phoneNumberId" in r.whatsapp) r.whatsapp.phoneNumberId = String(r.whatsapp.phoneNumberId || "").replace(/\D/g, "");
+          if ("publicUrl" in r.whatsapp) { const u = String(r.whatsapp.publicUrl || "").trim().replace(/\/whatsapp\/?$/, "").replace(/\/+$/, ""); r.whatsapp.publicUrl = u && !/^https?:\/\//.test(u) ? `https://${u}` : u; }
+        }
+        if (r.forward && "via" in r.forward && !["whatsapp", "teams", "both"].includes(r.forward.via)) delete r.forward.via;
+        if (r.teams && "inboxFolder" in r.teams) r.teams.inboxFolder = String(r.teams.inboxFolder || "").trim().replace(/^"(.*)"$/, "$1");
+        this.data.remote = deepMerge(this.data.remote, r);
       } else if (k === "visuals") {
         const v = patch.visuals && typeof patch.visuals === "object" ? { ...patch.visuals } : {};
         if ("theme" in v && !["reactor", "spiral", "neural", "grid"].includes(v.theme)) delete v.theme;
@@ -155,6 +174,7 @@ export class Config {
     if ("apiKey" in patch) this.setApiKey(patch.apiKey);
     if ("elevenKey" in patch) this.setSecret("elevenKey", patch.elevenKey);
     for (const k of ["openaiKey", "geminiKey", "customKey"]) if (k in patch) this.setSecret(k, patch[k]); // other brains' keys
+    for (const k of ["waToken", "waAppSecret", "teamsWebhook"]) if (k in patch) this.setSecret(k, patch[k]); // messaging (remote.js)
     this.save();
   }
 
@@ -193,7 +213,7 @@ export class Config {
 
   /** What the UI is allowed to see: everything except secrets. */
   publicView() {
-    const { token, apiKey, elevenKey, openaiKey, geminiKey, customKey, ...rest } = this.data;
+    const { token, apiKey, elevenKey, openaiKey, geminiKey, customKey, waToken, waAppSecret, teamsWebhook, teamsRefresh, ...rest } = this.data;
     return { ...rest, hasApiKey: this.hasCredentials(), hasElevenKey: !!this.getSecret("elevenKey"),
       brainKeys: { openai: !!this.getSecret("openaiKey"), gemini: !!this.getSecret("geminiKey"), custom: !!this.getSecret("customKey") }, keyStorage: apiKey?.scheme || (process.env.ANTHROPIC_API_KEY ? "env" : null), dataDir: DATA_DIR };
   }

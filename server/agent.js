@@ -116,6 +116,7 @@ function contextBlock(ctx = {}) {
   if (ctx.input === "briefing") lines.push("input: none - the app is asking for the daily briefing at start-up. Call briefing_data, then brief them.");
   else if (ctx.input === "notes") lines.push("input: a meeting transcript the app just recorded (speech-to-text, no speaker names; expect small errors). Write it up as asked below.");
   else if (ctx.input === "event") lines.push("input: none - this message is an automatic notice from the app (one of your minions reported back), not something the user said. Brief them on it in one to three spoken sentences, then stop.");
+  else if (ctx.input === "remote") lines.push(`input: a ${ctx.channel || "chat"} message from their phone - they're away from the screen. Reply as a chat message: short and plain, no tables or headings, and don't rely on showing things on screen (they won't see it). Anything that needs their approval is asked in ${ctx.channel || "the chat"}; they answer there.`);
   else if (ctx.input) lines.push(`input: ${ctx.input === "voice" ? "spoken (speech-to-text; expect small transcription errors)" : "typed"}`);
   if (ctx.lang && ctx.lang !== "en") lines.push(`spoken_language: ${LANGUAGE_NAMES[ctx.lang] || ctx.lang} (detected from their speech)`);
   if (ctx.offer) lines.push(`your_last_offer: you just told them ${JSON.stringify(String(ctx.offer).slice(0, 300))} - this message may be the answer to it`);
@@ -340,6 +341,7 @@ export class Agent {
       who: opts.who || "D.E.N.N.I.S.",
       minions: this.minions,
       reminders: this.reminders,
+      remote: this.remote || null,
       generated: opts.generated || null,
       safe: (p, opts) => this.platform.resolveSafe(p, roots(), opts),
       ui: (event) => emit({ type: "ui", ...event }),

@@ -24,6 +24,12 @@ import { PROVIDERS, brainOf, listModels } from "./brains.js";
 import { applyUndo } from "./tools.js";
 import { Reminders } from "./reminders.js";
 import { FolderWatcher } from "./watcher.js";
+import { RemoteHub } from "./remote.js";
+import tls from "node:tls";
+
+// Outgoing HTTPS trusts the operating system's certificates as well as Node's own, as browsers do: on a
+// company network whose gateway re-signs traffic, its root certificate is in the system store.
+try { tls.setDefaultCACertificates([...tls.getCACertificates("default"), ...tls.getCACertificates("system")]); } catch { /* older Node: its own store only */ }
 import { history as undoHistory } from "./undo.js";
 import { resolveSafe, PathError } from "./paths.js";
 import { mimeOf, isExecutable, isTextLike, kindOf } from "./kinds.js";
@@ -72,13 +78,29 @@ export async function startServer({ config, platform, mock = false, port } = {})
   let current = null; // { abort: AbortController }
   const eventClients = new Set();
   index.onStatus((status) => broadcast({ type: "index", status }));
-  agent.broadcast = broadcast; // minion progress and approvals reach every open window
+  // messaging (remote.js): your phone over WhatsApp / Teams. "Away" = no window open, or no activity in one for a while
+  const presence = { lastActive: Date.now() };
+  const remote = new RemoteHub({ config, agent, broadcast: (ev) => broadcast(ev), isAway: (minutes = 10) => !eventClients.size || Date.now() - presence.lastActive > minutes * 60_000 });
+  agent.remote = remote;
+  remote.start().catch((e) => console.error("[remote]", e));
+  agent.broadcast = (ev) => { broadcast(ev); remote.onEvent(ev); }; // minion progress and approvals reach every open window (and your phone)
   agent.mcp.onChange((servers) => broadcast({ type: "mcp", servers }));
   agent.mcp.start(); // connects in the background
   // reminders go off in every open window; with none open they wait (and are announced as missed)
   // the folder watcher: new batches of files and low disk space, said once (see watcher.js)
-  const watcher = new FolderWatcher({ config, index, kindOf, notify: (notice) => { if (!eventClients.size) return false; broadcast({ type: "watch", notice }); return true; } });
-  agent.reminders = new Reminders({ announce: (reminder, { missed }) => { if (!eventClients.size) return false; broadcast({ type: "reminder", reminder, missed }); return true; } });
+  const watcher = new FolderWatcher({ config, index, kindOf, notify: (notice) => {
+    const ui = eventClients.size > 0;
+    if (ui) broadcast({ type: "watch", notice });
+    const text = RemoteHub.watchText(notice);
+    const phone = !!text && remote.notify(text, { kind: "watcher" });
+    return ui || phone;
+  } });
+  agent.reminders = new Reminders({ announce: (reminder, { missed }) => {
+    const ui = eventClients.size > 0;
+    if (ui) broadcast({ type: "reminder", reminder, missed });
+    const phone = remote.notify(`\u23F0 ${missed ? "Missed reminder" : "Reminder"}: ${reminder.text}`, { kind: "reminders" });
+    return ui || phone;
+  } });
   function broadcast(ev) {
     const line = `data: ${JSON.stringify(ev)}\n\n`;
     for (const res of eventClients) res.write(line);
@@ -169,6 +191,30 @@ export async function startServer({ config, platform, mock = false, port } = {})
       req.on("close", () => { clearInterval(ping); eventClients.delete(res); });
       return;
     }
+    // the window says you're at the computer (so updates don't also buzz your phone)
+    if (route === "/presence" && req.method === "POST") { presence.lastActive = Date.now(); return send(res, 200, { ok: true }); }
+    // ---- messaging: WhatsApp and Teams
+    if (route === "/remote" && isGet) return send(res, 200, remote.status());
+    if (route === "/remote" && req.method === "POST") {
+      const b = await readJson(req);
+      try {
+        if (b.action === "restart") { await remote.restart(); return send(res, 200, { ok: true, status: remote.status() }); }
+        if (b.action === "test") {
+          const r = await remote.message(`Hello from D.E.N.N.I.S. \u{1F44B} This is ${b.channel === "teams" ? "Teams" : "WhatsApp"} working. Message me here any time - and reply STOP whenever you want me to stop what I'm doing.`, b.channel || "any");
+          return send(res, 200, typeof r === "string" ? { ok: true, text: r } : { ok: false, error: r.error });
+        }
+        if (b.action === "wa-check") return send(res, 200, await remote.wa.checkTunnel());
+        if (b.action === "teams-signin") return send(res, 200, { ok: true, ...(await remote.teams.startSignIn()) });
+        if (b.action === "teams-signout") { remote.teams.signOut(); return send(res, 200, { ok: true }); }
+        if (b.action === "teams-chats") return send(res, 200, { ok: true, chats: await remote.teams.listChats() });
+        // where a OneDrive inbox would sync to on this computer (OneDrive for work / school, else personal)
+        if (b.action === "inbox-suggest") {
+          const od = process.env.OneDriveCommercial || process.env.OneDrive || "";
+          return send(res, 200, { ok: true, folder: od ? path.join(od, "Dennis", "Inbox") : "", oneDrive: od, onedrivePath: "/Dennis/Inbox" });
+        }
+      } catch (e) { return send(res, 200, { ok: false, error: e.message }); }
+      return send(res, 400, { error: "unknown action" });
+    }
     if (route === "/settings" && req.method === "POST") {
       const patch = await readJson(req);
       if (typeof patch.city === "string") {
@@ -189,7 +235,13 @@ export async function startServer({ config, platform, mock = false, port } = {})
       config.update(patch);
       if (JSON.stringify(config.get("roots")) + config.get("showHidden") !== before) index.rebuild();
       if ("roots" in patch || "watch" in patch) watcher.restart();
-      agent.conv = null; // settings shape the system prompt and tools: next message starts fresh
+      if ("remote" in patch || "waToken" in patch || "waAppSecret" in patch || "teamsWebhook" in patch) await remote.restart();
+      // settings that shape the system prompt or tools start a fresh conversation; the look, the
+      // hands, messaging and the small voice switches (continuous, wake word, speak) don't
+      const quiet = ["visuals", "hands", "remote", "waToken", "waAppSecret", "teamsWebhook"];
+      const quietVoice = ["continuous", "wakeWord", "speak", "micId", "rate", "pitch"];
+      const reshapes = Object.keys(patch).some((k) => !quiet.includes(k) && !(k === "voice" && Object.keys(patch.voice || {}).every((v) => quietVoice.includes(v))));
+      if (reshapes) agent.conv = null; // next message starts fresh
       agent.docsBlocked = null; // and give document skills another try
       return send(res, 200, { ok: true, config: config.publicView() });
     }
@@ -521,6 +573,7 @@ export async function startServer({ config, platform, mock = false, port } = {})
       for (const r of agent.minions.running()) agent.minions.recall(r.id);
       agent.reminders?.close();
       watcher.close();
+      remote.close();
       await agent.mcp.close().catch(() => {}); // stops local MCP server processes
       await new Promise((r) => { for (const c of eventClients) c.end(); server.close(() => r()); });
     },

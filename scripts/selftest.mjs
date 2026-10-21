@@ -331,6 +331,153 @@ check("saving asks first; just showing one doesn't", !!sd.approval({ title: "x",
 const d5 = await sd.run({ title: "Nobody home", mermaid: "flowchart LR\n  A --> B" }, dctx(() => null));
 check("no window to answer: he's told it may not have drawn", /didn't confirm/.test(d5));
 
+// ---------------------------------------------------------------- messaging: WhatsApp and Teams (against fakes of Meta and Microsoft)
+{
+  const { RemoteHub } = await import("../server/remote.js");
+  const { validSignature, toWhatsApp, splitText } = await import("../server/whatsapp.js");
+  const { TeamsChannel, fromTeamsHtml } = await import("../server/teams.js");
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const until = async (fn, ms = 4000) => { const t0 = Date.now(); while (!fn() && Date.now() - t0 < ms) await wait(25); return fn(); };
+  const crypto = await import("node:crypto");
+  const ME = "971500000001", PORT = 47931;
+  const store = { remote: {
+    whatsapp: { enabled: true, phoneNumberId: "1234567", allow: [ME], port: PORT, apiVersion: "v23.0", template: "", templateLang: "en", verifyToken: "vt-test", publicUrl: "" },
+    teams: { enabled: true, tenant: "organizations", clientId: "client-1", chatId: "chat-1", chatName: "Notes", pollSeconds: 6, account: "" },
+    forward: { reminders: true, minions: true, watcher: true, approvals: true, awayOnly: true, awayMinutes: 10, via: "whatsapp" },
+  } };
+  const secrets = { waToken: "wa-token", waAppSecret: "app-secret", teamsRefresh: "rt-1" };
+  const fcfg = { get: (k) => store[k], getSecret: (k) => secrets[k], setSecret: (k, v) => { if (v) secrets[k] = v; else delete secrets[k]; }, save: () => {}, update: () => {} };
+  const out = [], teamsInbox = [];
+  const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
+  const fakeFetch = async (url, opts = {}) => {
+    url = String(url);
+    if (url.startsWith(`http://127.0.0.1:${PORT}`)) return fetch(url, opts); // the real listener
+    const body = typeof opts.body === "string" && opts.body.startsWith("{") ? JSON.parse(opts.body) : opts.body;
+    out.push({ url, method: opts.method || "GET", body });
+    if (url.includes("graph.facebook.com")) return json({ messages: [{ id: `wamid.${out.length}` }] });
+    if (url.includes("login.microsoftonline.com")) return json({ access_token: "at-1", refresh_token: "rt-2", expires_in: 3600 });
+    if (url.includes("/me?")) return json({ id: "me-1", displayName: "Tester" });
+    if (url.includes("/chats/chat-1/messages") && (opts.method || "GET") === "GET") return json({ value: teamsInbox });
+    if (url.includes("/chats/chat-1/messages")) return json({ id: `sent-${out.length}` });
+    return json({ error: { message: "not faked" } }, 404);
+  };
+  const turns = [], answered = [];
+  const stubAgent = {
+    busy: false,
+    resolveApproval: (id, yes) => { answered.push([id, yes]); return true; },
+    async turn({ text, context, emit }) {
+      turns.push({ text, context });
+      if (/move/.test(text)) { emit({ type: "approval", id: "ap1", title: "Move this file?", detail: "notes.txt -> Archive" }); await until(() => answered.length); emit({ type: "approval_done", id: "ap1", yes: answered[0][1] }); }
+      emit({ type: "text", delta: `**Done**: ${text}` });
+      emit({ type: "done" });
+    },
+  };
+  let away = true;
+  const hub = new RemoteHub({ config: fcfg, agent: stubAgent, isAway: () => away, fetchImpl: fakeFetch, stateFile: path.join(tmp, "remote-state.json") });
+  await hub.wa.start();
+  const sign = (raw) => "sha256=" + crypto.createHmac("sha256", "app-secret").update(raw).digest("hex");
+  const hook = (msg, signed = true) => { const raw = JSON.stringify({ object: "whatsapp_business_account", entry: [{ id: "waba", changes: [{ field: "messages", value: { metadata: { phone_number_id: "1234567" }, messages: [msg] } }] }] });
+    return fetch(`http://127.0.0.1:${PORT}/whatsapp`, { method: "POST", headers: { "Content-Type": "application/json", ...(signed ? { "X-Hub-Signature-256": sign(raw) } : {}) }, body: raw }); };
+  const waSends = () => out.filter((o) => o.url.includes("graph.facebook.com") && o.body?.type);
+
+  check("WhatsApp signatures are checked", validSignature(Buffer.from("x"), sign("x"), "app-secret") && !validSignature(Buffer.from("x"), sign("y"), "app-secret"));
+  const v = await fetch(`http://127.0.0.1:${PORT}/whatsapp?hub.mode=subscribe&hub.verify_token=vt-test&hub.challenge=abc123`);
+  const vBad = await fetch(`http://127.0.0.1:${PORT}/whatsapp?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=abc123`);
+  check("Meta's callback check is answered (and only with the right verify token)", (await v.text()) === "abc123" && vBad.status === 403);
+  check("nothing else is reachable through the WhatsApp listener", (await fetch(`http://127.0.0.1:${PORT}/api/state`)).status === 404);
+  check("an unsigned webhook call is refused", (await hook({ id: "m0", from: ME, type: "text", text: { body: "hi" } }, false)).status === 401 && !turns.length);
+  await hook({ id: "m1", from: ME, type: "text", text: { body: "what's in Downloads?" } });
+  await until(() => waSends().length);
+  const r1 = waSends()[0];
+  check("your WhatsApp message runs a turn, marked as coming from your phone", turns[0]?.text === "what's in Downloads?" && turns[0]?.context.input === "remote" && turns[0]?.context.channel === "WhatsApp", JSON.stringify(turns));
+  check("...and the reply comes back in WhatsApp's style", r1?.body.to === ME && r1?.body.text?.body === "*Done*: what's in Downloads?", JSON.stringify(r1?.body));
+  await hook({ id: "m1", from: ME, type: "text", text: { body: "what's in Downloads?" } }); // Meta delivering it twice
+  await hook({ id: "m2", from: "447700900000", type: "text", text: { body: "hello?" } }); // a stranger
+  await wait(300);
+  check("duplicates and strangers are ignored", turns.length === 1 && hub.wa.ignored === 1);
+  await hook({ id: "m3", from: ME, type: "text", text: { body: "move notes.txt into Archive" } });
+  await until(() => waSends().some((o) => o.body.type === "interactive"));
+  const ask = waSends().find((o) => o.body.type === "interactive");
+  check("an approval comes to WhatsApp as Allow / Cancel buttons", ask?.body.interactive.action.buttons[0].reply.id === "ap:ap1:yes" && /Move this file/.test(ask?.body.interactive.body.text), JSON.stringify(ask?.body));
+  await hook({ id: "m4", from: ME, type: "interactive", interactive: { type: "button_reply", button_reply: { id: "ap:ap1:yes", title: "Allow" } } });
+  await until(() => waSends().some((o) => /Done\*: move/.test(o.body.text?.body || "")));
+  check("tapping Allow approves it, and the turn carries on", answered[0]?.[0] === "ap1" && answered[0]?.[1] === true && waSends().some((o) => /Done\*: move/.test(o.body.text?.body || "")));
+  // updates: only while away; outside WhatsApp's 24 h window they wait for your next message
+  away = false;
+  check("while you're at the computer, updates stay off your phone", hub.notify("Reminder: check the LED calibration", { kind: "reminders" }) === false);
+  away = true;
+  hub.state.lastInbound[ME] = Date.now() - 30 * 3600_000;
+  const before = waSends().length;
+  check("while you're away they go to your phone", hub.notify("Scout finished: 3 processors found", { kind: "minions" }) === true);
+  await wait(200);
+  check("...but outside WhatsApp's 24-hour window they're held, not sent", waSends().length === before && hub.wa.status().held === 1);
+  await hook({ id: "m5", from: ME, type: "text", text: { body: "morning" } });
+  await until(() => waSends().some((o) => /While you were away/.test(o.body.text?.body || "")));
+  check("...and delivered as soon as you write again", waSends().some((o) => /While you were away:[\s\S]*Scout finished/.test(o.body.text?.body || "")));
+  check("long replies are split, markdown converted", splitText("a ".repeat(3000), 3900).length === 2 && toWhatsApp("## Title\n- one\n**b**") === "*Title*\n• one\n*b*");
+  // the Cloudflare quick tunnel's new address goes to Meta by itself
+  store.remote.whatsapp.appId = "998877";
+  hub.wa.settleMs = 0;
+  const reg = await hub.wa.registerWebhook("https://quiet-owl.trycloudflare.com");
+  const sub = out.find((o) => o.url.includes("/998877/subscriptions"));
+  const form = sub && new URLSearchParams(sub.body);
+  check("a new tunnel address is registered with Meta (callback, verify token, app token)", reg.ok && form?.get("callback_url") === "https://quiet-owl.trycloudflare.com/whatsapp" && form?.get("verify_token") === "vt-test" && form?.get("access_token") === "998877|app-secret" && form?.get("fields") === "messages", JSON.stringify(reg));
+  hub.close();
+  config.update({ remote: { whatsapp: { allow: "+971 50 000 0001, 44 7700 900000", publicUrl: "my-dennis.example.com/whatsapp", tunnel: "sideways" } } });
+  const wcfg2 = config.get("remote").whatsapp;
+  check("numbers typed with spaces are understood; the address and tunnel choice are tidied", JSON.stringify(wcfg2.allow) === '["971500000001","447700900000"]' && wcfg2.publicUrl === "https://my-dennis.example.com" && wcfg2.tunnel === "own", JSON.stringify(wcfg2));
+  config.update({ waToken: "secret-wa", teamsWebhook: "https://example.com/hook" });
+  const pv = JSON.stringify(config.publicView());
+  config.update({ waToken: "", teamsWebhook: "" });
+  check("messaging tokens never reach the page", !pv.includes("secret-wa") && !pv.includes("example.com/hook"));
+
+  // Teams: the chat you picked, checked every few seconds
+  const got = [];
+  const tm = new TeamsChannel({ config: fcfg, onMessage: (ch, m) => got.push(m), fetchImpl: fakeFetch });
+  await tm.whoami();
+  teamsInbox.push({ id: "t0", messageType: "message", createdDateTime: "2026-10-21T10:00:00Z", from: { user: { id: "me-1" } }, body: { content: "<p>old message</p>" } });
+  await tm.poll(); // the first look only notes where the chat is up to
+  teamsInbox.unshift(
+    { id: "t3", messageType: "message", createdDateTime: "2026-10-21T10:03:00Z", from: { user: { id: "someone-else" } }, body: { content: "<p>not you</p>" } },
+    { id: "t2", messageType: "message", createdDateTime: "2026-10-21T10:02:00Z", from: { user: { id: "me-1" } }, body: { content: "<p>\u{1F916} D.E.N.N.I.S.</p><p>his own reply</p>" } },
+    { id: "t1", messageType: "message", createdDateTime: "2026-10-21T10:01:00Z", from: { user: { id: "me-1" } }, body: { content: "<p>Summarise <b>today&#39;s</b> renders</p>" } },
+  );
+  await tm.poll();
+  check("Teams: your new message is picked up (old ones aren't replayed)", got.length === 1 && got[0].text === "Summarise today's renders", JSON.stringify(got));
+  check("Teams: his own replies and other people's messages are ignored", !got.some((m) => /his own|not you/.test(m.text)));
+  await tm.send(null, "All **six** renders are in.");
+  const post = out.find((o) => o.method === "POST" && o.url.includes("/chats/chat-1/messages"));
+  check("Teams: replies go to the chat, marked as D.E.N.N.I.S.", /D\.E\.N\.N\.I\.S\.[\s\S]*<b>six<\/b>/.test(post?.body?.body?.content || ""), JSON.stringify(post?.body));
+  check("Teams HTML comes in as plain text", fromTeamsHtml("<p>a&nbsp;b<br>c &amp; d</p>") === "a b\nc & d");
+  tm.close();
+
+  // the OneDrive inbox: messages to him with no app registration (a Workflow saves them, OneDrive syncs them here)
+  const inboxDir = path.join(tmp, "OneDrive", "Dennis", "Inbox");
+  store.remote.teams = { ...store.remote.teams, chatId: "", inboxFolder: inboxDir, inboxPrefix: true };
+  secrets.teamsWebhook = "https://example.com/workflow-hook";
+  const inboxGot = [];
+  const ib = new TeamsChannel({ config: fcfg, onMessage: (ch, m) => inboxGot.push(m), fetchImpl: fakeFetch });
+  ib.startInbox();
+  clearInterval(ib.inboxTimer);
+  await wait(50);
+  const put = (name, text, ageMs) => { const f = path.join(inboxDir, name); fs.writeFileSync(f, text); const t = (Date.now() - ageMs) / 1000; fs.utimesSync(f, t, t); };
+  put("1.txt", "<p>Dennis, what's new in <b>Renders</b>?</p>", 5000);
+  put("2.txt", "buy milk on the way home", 5000);
+  put("3.json", JSON.stringify({ text: "Dennis yes" }), 5000);
+  put("4.txt", "Dennis, move everything to Archive", 3600_000); // written an hour ago, while he was off
+  put("5.json", JSON.stringify({ responder: { displayName: "Tester" }, data: { reply: "sort the renders by shot", from: "dennis-card" } }), 5000); // a card reply
+  await ib.scanInbox();
+  await wait(100);
+  check("inbox: messages that start with Dennis are picked up (HTML or JSON), and card replies need no prefix", inboxGot.map((m) => m.text).join("|") === "what's new in Renders?|yes|sort the renders by shot" && inboxGot.every((m) => m.from === "inbox") && ib.allowed("inbox"), JSON.stringify(inboxGot));
+  check("inbox: other notes to self are left alone, and stale ones aren't acted on", ib.inbox.ignored === 1 && !inboxGot.some((m) => /Archive/.test(m.text)));
+  check("inbox: every file is filed under Done - nothing deleted", fs.readdirSync(inboxDir).filter((n) => n !== "Done").length === 0 && fs.readdirSync(path.join(inboxDir, "Done")).length === 5);
+  const cardPost = out.find((o) => o.url === "https://example.com/workflow-hook");
+  const card = cardPost?.body?.attachments?.[0]?.content;
+  check("inbox: his cards carry a reply box and a Send button", card?.body?.some((b) => b.type === "Input.Text" && b.id === "reply") && card?.actions?.[0]?.type === "Action.Submit", JSON.stringify(card));
+  check("inbox: he says he set the stale one aside, through the Workflow", out.some((o) => o.url === "https://example.com/workflow-hook" && /set aside 1 message/.test(JSON.stringify(o.body))));
+  ib.close();
+}
+
 // ---------------------------------------------------------------- 4. another brain (OpenAI-compatible: GPT, Gemini, Ollama, ...)
 const compatSeen = [];
 const compatChunks = [

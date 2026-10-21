@@ -436,6 +436,18 @@ export function buildTools({ webSearch, scope = "dennis", allow = null, docs = f
       },
     },
     {
+      name: "message_phone",
+      description: "Send them a message on their phone - WhatsApp or Microsoft Teams, whichever they've connected. Use it when they've asked to be told about something (\"message me when the renders are in\", \"text me the summary\"), or for something they'd clearly want to know while away. Not for ordinary replies: those go back automatically the way the message came.",
+      input_schema: obj({
+        text: { type: "string", description: "The message, in plain text." },
+        channel: { type: "string", enum: ["any", "whatsapp", "teams"], description: "Where to send it (default: their usual one)." },
+      }, ["text"]),
+      async run({ text, channel = "any" }, ctx) {
+        if (!ctx.remote) return { error: "Messaging isn't available here." };
+        return ctx.remote.message(String(text).slice(0, 4000), channel);
+      },
+    },
+    {
       name: "undo_last",
       description: "Undo your most recent change(s) to their files: put a moved or renamed item back, or take away a file or folder you created (it's kept in D.E.N.N.I.S.'s undone folder, never deleted). Use it when they say undo, put it back, or that was wrong. Changes made by your minions count too.",
       input_schema: obj({ count: { type: "integer", description: "How many changes to undo, newest first (default 1)." } }),
