@@ -245,7 +245,7 @@ async function showPreview(item) {
   if (WINS.size >= MAX_WINDOWS) closeWindow([...WINS.keys()][0]); // the oldest makes room
   const el = WIN_TPL.content.firstElementChild.cloneNode(true);
   const w = { id: 0, item, el };
-  w.id = galaxy.openWindow(el, item.path);
+  w.id = galaxy.openWindow(el, item.path, { flat: item.kind === "web" }); // pages stay flat and still: crisp text, true clicks
   WINS.set(w.id, w);
   wireWindow(w);
   el.classList.add("open");
@@ -257,6 +257,7 @@ async function showPreview(item) {
 async function fillWindow(w) {
   const { el, item } = w;
   if (item.kind === "diagram") return fillDiagram(w);
+  if (item.kind === "web") return fillWeb(w);
   el.querySelector(".kdot").style.color = KIND_COLORS[item.kind] || KIND_COLORS.other;
   el.querySelector(".ptitle b").textContent = item.name;
   el.querySelector(".ptitle small").textContent = `${KIND_NAMES[item.kind] || item.kind} · ${fmtBytes(item.size)} · ${fmtDate(item.mtime)}`;
@@ -302,10 +303,12 @@ function focusWindow(id) {
   if (!w) return;
   S.focusWin = id;
   S.selected = w.item;
+  if (w.item.kind === "web") lastWeb = id;
   galaxy.focusWindow(id);
   galaxy.select(w.item.path);
   for (const x of WINS.values()) x.el.classList.toggle("focus", x.id === id);
   document.body.classList.add("preview-open");
+  document.body.classList.toggle("web-focus", w.item.kind === "web"); // no scanlines over a web page
   renderTabs();
 }
 
@@ -316,11 +319,11 @@ function closeWindow(id, silent = false) {
   w.reader?.dispose(); // PDF.js workers, observers, picture URLs
   w.reader = null;
   galaxy.closeWindow(id, silent); // folds back into its card
-  setTimeout(() => { w.el.querySelector(".pbody").innerHTML = ""; }, silent ? 0 : 420); // stops media playback
+  setTimeout(() => { w.el.querySelector(".pbody").innerHTML = ""; w.wv = null; }, silent ? 0 : 420); // stops media playback (and ends a web page)
   if (S.focusWin === id) {
     const next = [...WINS.values()].pop();
     if (next) focusWindow(next.id);
-    else { S.focusWin = null; S.selected = null; galaxy.select(null); document.body.classList.remove("preview-open"); }
+    else { S.focusWin = null; S.selected = null; galaxy.select(null); document.body.classList.remove("preview-open", "web-focus"); }
   }
   renderTabs();
 }
@@ -350,6 +353,12 @@ function wireWindow(w) {
     if (!act) return;
     if (act === "close") return closeWindow(w.id);
     if (act === "max") return setWindowMax(!galaxy.isMaximized(w.id), w.id);
+    if (it.kind === "web") {
+      if (act === "ask") ask("Have a look at this page and tell me about it.");
+      if (act === "open") window.open(it.web.url, "_blank"); // the desktop app hands it to your own browser
+      if (act === "reveal") copyText(it.web.url).then((ok) => toast(ok ? "Address copied" : "Couldn't reach the clipboard", !ok));
+      return;
+    }
     if (it.kind === "diagram") {
       if (act === "ask") ask(`Walk me through the "${it.name}" diagram.`);
       if (act === "open") saveDiagram(it);
@@ -517,6 +526,141 @@ async function copyText(text) {
   return ok;
 }
 
+// ---- his browser (the browser tool, open_app): web pages in windows of their own. In the desktop
+// app each is a <webview> in its own locked-down session (electron/main.mjs: no Node, never this
+// page's address); in a plain browser tab, pages open in a new tab instead.
+const SHELL = window.dennisShell || null;
+let lastWeb = 0, webSeq = 0; // lastWeb: the web window used most recently - "this page"
+const webWindows = () => [...WINS.values()].filter((w) => w.item.kind === "web");
+function webWin() {
+  const f = focused();
+  if (f?.item.kind === "web") return f;
+  const last = WINS.get(lastWeb);
+  return last?.item.kind === "web" ? last : webWindows().pop() || null;
+}
+/** What was typed into the address field: a web address (http for this PC and the LAN), or words to search for. */
+function webUrl(text) {
+  let s = String(text || "").trim();
+  if (!s) return "";
+  if (!/^https?:\/\//i.test(s)) {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return ""; // file://, ftp:// ...
+    if (/\s/.test(s) || !/[.:]/.test(s)) return `https://www.google.com/search?q=${encodeURIComponent(s)}`;
+    s = (/^(localhost|127\.|\[::1\]|10\.|192\.168\.)/i.test(s) || /^[^/]+:\d+(\/|$)/.test(s) ? "http://" : "https://") + s;
+  }
+  try { const u = new URL(s); return /^https?:$/.test(u.protocol) && u.origin !== location.origin ? u.href : ""; } catch { return ""; }
+}
+const hostOf = (u) => { try { return new URL(u).host; } catch { return String(u || ""); } };
+async function openWeb(url, title) {
+  const u = webUrl(url);
+  if (!u) { toast("That isn't a web address I can open", true); return null; }
+  if (!SHELL) { window.open(u, "_blank", "noopener"); return null; }
+  if (S.compact) setCompact(false);
+  const have = webWindows().find((w) => w.item.web.start === u); // the same page (or app) again: bring it forward
+  if (have) { focusWindow(have.id); return have; }
+  const item = { path: `web:${++webSeq}`, name: title || hostOf(u), kind: "web", isDir: false, size: 0, mtime: Date.now(), web: { start: u, url: u, title: "", app: title || "" } };
+  const w = await showPreview(item);
+  if (w) galaxy.resizeWindow(w.id, Math.min(1560, galaxy.w - galaxy.insetL - galaxy.insetR - 44), galaxy.h - (galaxy.safeTop || 96) - 116); // the free space between the side panels
+  return w;
+}
+const WEB_ICON = {
+  back: `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 3 5 8l5 5"/></svg>`,
+  forward: `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m6 3 5 5-5 5"/></svg>`,
+  reload: `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3"/></svg>`,
+};
+function fillWeb(w) {
+  const { el, item } = w;
+  el.classList.add("web");
+  el.querySelector(".kdot").style.color = "var(--cyan)";
+  const titleEl = el.querySelector(".ptitle b"), sub = el.querySelector(".ptitle small");
+  titleEl.textContent = item.name;
+  el.querySelector("[data-act=open]").textContent = "OPEN IN YOUR BROWSER";
+  el.querySelector("[data-act=reveal]").textContent = "COPY ADDRESS";
+  const body = el.querySelector(".pbody");
+  body.className = "pbody webbody";
+  body.innerHTML = `<div class="wbar"><button type="button" data-web="back" title="Back" disabled>${WEB_ICON.back}</button><button type="button" data-web="forward" title="Forward" disabled>${WEB_ICON.forward}</button><button type="button" data-web="reload" title="Reload">${WEB_ICON.reload}</button><input class="waddr" spellcheck="false" autocomplete="off" aria-label="Web address"><i class="wload"></i></div><div class="wstage"><div class="wfail" hidden></div></div>`;
+  const addr = body.querySelector(".waddr"), fail = body.querySelector(".wfail");
+  const wv = document.createElement("webview");
+  wv.setAttribute("partition", "persist:dennis-web"); // the main process enforces it either way
+  wv.setAttribute("allowpopups", ""); // pop-ups become windows here (main.mjs)
+  wv.setAttribute("src", item.web.start);
+  body.querySelector(".wstage").prepend(wv);
+  w.wv = wv;
+  // a failed page draws over anything placed on it, so it steps aside while the notice shows
+  w.setFail = (html) => { fail.innerHTML = html || ""; fail.hidden = !html; wv.style.visibility = html ? "hidden" : ""; };
+  const show = (u) => { item.web.url = u; if (document.activeElement !== addr) addr.value = u; sub.textContent = hostOf(u); };
+  const navState = () => { try { body.querySelector("[data-web=back]").disabled = !wv.canGoBack(); body.querySelector("[data-web=forward]").disabled = !wv.canGoForward(); } catch { /* not attached yet */ } };
+  show(item.web.start);
+  wv.addEventListener("dom-ready", () => { try { w.wcId = wv.getWebContentsId(); } catch { /* gone */ } navState(); });
+  wv.addEventListener("focus", () => { if (S.focusWin !== w.id) focusWindow(w.id); }); // clicks inside a page don't reach this page
+  wv.addEventListener("page-title-updated", (e) => {
+    item.web.title = e.title;
+    if (item.web.app) return; // an app keeps its own name
+    item.name = e.title || hostOf(item.web.url);
+    titleEl.textContent = item.name;
+    renderTabs();
+  });
+  wv.addEventListener("did-navigate", (e) => { show(e.url); navState(); if (e.httpResponseCode > 0) w.setFail(null); });
+  wv.addEventListener("did-navigate-in-page", (e) => { if (e.isMainFrame) { show(e.url); navState(); } });
+  wv.addEventListener("did-start-loading", () => el.classList.add("loading"));
+  wv.addEventListener("did-stop-loading", () => { el.classList.remove("loading"); navState(); });
+  wv.addEventListener("did-fail-load", (e) => {
+    if (!e.isMainFrame || e.errorCode === -3) return; // -3: replaced by another load
+    const down = [-102, -105, -106, -109, -118, -7].includes(e.errorCode); // refused, no such host, offline, unreachable, timed out
+    w.setFail(`<b>${down ? "NOT ANSWERING" : "COULDN'T LOAD THE PAGE"}</b><span>${escapeHtml(hostOf(e.validatedURL))} &middot; ${escapeHtml(e.errorDescription || `error ${e.errorCode}`)}</span>${down && item.web.app ? `<small>If ${escapeHtml(item.web.app)} has stopped, say "open ${escapeHtml(item.web.app)}" and I'll start it again.</small>` : ""}<button type="button" data-web="reload">TRY AGAIN</button>`);
+  });
+  body.addEventListener("click", (e) => { const b = e.target.closest("[data-web]"); if (b) webNav(w, b.dataset.web); });
+  addr.addEventListener("focus", () => addr.select());
+  addr.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { addr.value = item.web.url; addr.blur(); e.stopPropagation(); return; }
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const u = webUrl(addr.value);
+    if (!u) return toast("That isn't a web address I can open", true);
+    w.setFail(null);
+    addr.blur();
+    wv.loadURL(u).catch(() => { /* did-fail-load says why */ });
+    wv.focus();
+  });
+}
+function webNav(w, nav) {
+  const wv = w?.wv;
+  if (!wv) return;
+  try {
+    if (nav === "back" && wv.canGoBack()) wv.goBack();
+    else if (nav === "forward" && wv.canGoForward()) wv.goForward();
+    else if (nav === "reload") { w.setFail?.(null); wv.reload(); }
+    else if (nav === "close") closeWindow(w.id);
+  } catch { /* not attached yet */ }
+}
+/** browser read / look: the page's text, or a picture of it, for D.E.N.N.I.S. */
+async function webAsk(ev) {
+  const w = webWin();
+  let r;
+  if (!SHELL) r = { ok: false, error: "Reading pages needs the desktop app." };
+  else if (!w) r = { ok: false, error: "No web page is open." };
+  else if (!w.wcId) r = { ok: false, error: "The page is still loading." };
+  else {
+    focusWindow(w.id);
+    r = await (ev.action === "web_read" ? SHELL.webRead(w.wcId) : SHELL.webLook(w.wcId)).catch((e) => ({ ok: false, error: e.message }));
+  }
+  if (ev.reply) api.uiReply(ev.reply, r).catch(() => {});
+}
+SHELL?.onWebOpen?.((url) => openWeb(url)); // a page's pop-ups and target=_blank links open as windows here
+
+/** An app he started (open_app) is up: show it and say so. */
+function appEvent(ev) {
+  if (ev.phase === "ready") {
+    if (ev.show) handleUi(ev.show);
+    const el = addMsg("minion", ev.text);
+    el.dataset.who = "APPS";
+    toast(ev.text);
+    if (!S.notes) { caption(ev.text, 4000); voice.say(ev.text); }
+  } else {
+    addMsg("err", ev.text);
+    toast(ev.text, true);
+  }
+}
+
 function askAbout(item) {
   S.selected = item;
   ask(item.isDir ? "What's in this folder? Give me the highlights." : "Tell me about this file.", { selected: item.path });
@@ -545,6 +689,8 @@ const TOOL_LABEL = {
   save_generated_file: (i) => `saving ${i.filename || "the new file"} to ${base(i.folder)}`,
   code_execution: () => "working in the sandbox", bash_code_execution: () => "running code in the sandbox", text_editor_code_execution: () => "editing in the sandbox",
   show_diagram: (i) => `drawing ${i.title ? `"${i.title}"` : "a diagram"}`,
+  open_app: (i) => `opening ${i.name}`, add_app: (i) => `asking to add ${i.name}`,
+  browser: (i) => (i.action === "open" ? `opening ${hostOf(i.url)}` : i.action === "read" ? "reading the page" : i.action === "look" ? "looking at the page" : `browser: ${i.action}`),
   deploy_minion: (i) => `deploying ${i.minion || "a helper"}`, create_minion: (i) => `creating the minion ${i.name}`, minion_status: () => "checking on the minions", recall_minion: (i) => `recalling ${i.id}`,
 };
 const toolLabel = (name, input) => (TOOL_LABEL[name] || (() => (name.startsWith("mcp__") ? name.slice(5).replace("__", ": ").replace(/_/g, " ") : name)))(input || {});
@@ -604,7 +750,7 @@ function onAgentEvent(ev) {
 
 function handleUi(ev) {
   // he's about to show you something: come back from compact mode first
-  if (S.compact && ["navigate", "present", "refresh", "home", "back", "diagram"].includes(ev.action)) setCompact(false);
+  if (S.compact && ["navigate", "present", "refresh", "home", "back", "diagram", "web", "web_look"].includes(ev.action)) setCompact(false);
   switch (ev.action) {
     case "compact": setCompact(true); break;
     case "reboot": reboot(); break;
@@ -620,6 +766,10 @@ function handleUi(ev) {
       break;
     case "present": present(ev.title, ev.paths); break;
     case "diagram": showDiagram(ev); break;
+    case "web": openWeb(ev.url, ev.title); break;
+    case "apps": if (S.config) S.config.apps = ev.apps || []; break;
+    case "web_nav": webNav(webWin(), ev.nav); break;
+    case "web_read": case "web_look": webAsk(ev); break;
     case "refresh": refresh(ev.path); break;
     case "home": home(); break;
     case "back": back(); break;
@@ -652,7 +802,7 @@ async function ask(text, { input = "text", selected, silent = false } = {}) {
   if (input !== "event" && isStopPhrase(text)) return hush();
   if (input !== "event" && isRepeatPhrase(text)) return sayAgain();
   if (input !== "event") {
-    const cmd = matchCommand(text, { places: instantPlaces() });
+    const cmd = matchCommand(text, { places: instantPlaces(), apps: (S.config?.apps || []).map((a) => a.name) });
     if (cmd) return runInstant(cmd, text); // done on the spot, no round trip to the brain
   }
   if (S.turn) await stopTurn();
@@ -662,7 +812,8 @@ async function ask(text, { input = "text", selected, silent = false } = {}) {
   setState("thinking");
   S.botEl = null; S.caption = ""; S.progressBuf = ""; S.replyBuf = "";
   caption("");
-  const context = { view: describeView(), selected: selected || (S.selected?.kind === "diagram" ? null : S.selected?.path) || null, input, greeting: S.greetPending || undefined, offer: S.offerPending || undefined, lang: input === "voice" ? voice.lastLang || undefined : undefined };
+  const page = focused()?.item.kind === "web" ? focused().item.web : null;
+  const context = { view: describeView(), selected: selected || (["diagram", "web"].includes(S.selected?.kind) ? null : S.selected?.path) || null, page: page ? `${page.app || page.title || hostOf(page.url)} - ${page.url}` : undefined, input, greeting: S.greetPending || undefined, offer: S.offerPending || undefined, lang: input === "voice" ? voice.lastLang || undefined : undefined };
   S.greetPending = null;
   S.offerPending = null;
   const turn = api.chat({ text, context }, onAgentEvent);
@@ -869,6 +1020,12 @@ async function runInstant(cmd, heard) {
     }
     case "notesStart": return startNotes();
     case "notesStop": if (!S.notes) return reply("I'm not taking notes."); return endNotes();
+    case "app": {
+      const r = await api.appsDo({ action: "open", name: cmd.arg }).catch((e) => ({ ok: false, error: e.message }));
+      if (!r.ok) return reply(r.error);
+      if (r.show) handleUi(r.show);
+      return reply(r.starting ? `Starting ${cmd.arg}. I'll bring it up the moment it's ready.` : r.show ? `${cmd.arg}.` : `Opening ${cmd.arg}.`);
+    }
     case "nextWindow": cycleWindows(1); break;
     case "prevWindow": cycleWindows(-1); break;
   }
@@ -1337,6 +1494,8 @@ const caps = new Caps({
   getConfig: () => S.config,
   saveSettings: async (patch) => { try { S.config = (await api.settings(patch)).config; } catch (e) { toast(e.message, true); } },
   showReport: (run) => { addMinionMsg(run); $("#log").classList.remove("hidden"); updateInsets(); caption(`${run.name}: ${(run.report || run.error || "").slice(0, 220)}`, 8000); },
+  setApps: (apps) => { if (S.config) S.config.apps = apps; }, // "open Mirsam" works at once
+  showUi: (ev) => handleUi(ev),
 });
 $("#chip-caps").onclick = () => caps.open();
 $("#open-caps").onclick = () => { $("#settings").classList.remove("show"); caps.open(); };
@@ -1434,7 +1593,10 @@ $("#reboot-ring").onclick = () => {
   setTimeout(() => $("#reboot-ring").classList.remove("armed"), 3000);
 };
 const REBOOT_LINES = ["Rebooting. Back in a moment.", "Going down for a quick restart. Don't go anywhere.", "Restarting. Try not to miss me."];
+let rebooting = false;
 function reboot() {
+  if (rebooting) return; // a click and a voice command at once still make one reboot
+  rebooting = true;
   const line = pick(REBOOT_LINES);
   stopAll();
   caption(line, 4000);
@@ -2059,7 +2221,7 @@ addEventListener("unhandledrejection", (e) => api.diag({ kind: "rejection", mess
 window.__dennis = {
   S, galaxy, gestures, voice, ask, navigate, home, back, present, activate, showPreview,
   summon: () => { if (!voice.listening) beginListen("summon", { auto: true }); },
-  compact: setCompact, reboot, caps, setTheme, showDiagram, setContinuous,
+  compact: setCompact, reboot, caps, setTheme, showDiagram, setContinuous, handleUi, openWeb, webWin,
   talk: { pressStart, pressEnd, endListen },
   handsFree,
   probe: runProbe,
@@ -2181,6 +2343,8 @@ function bootSequence(st) {
     else if (ev.type === "ui" && ev.remote) handleUi(ev); // something he did from a phone conversation
     else if (ev.type === "reminder") reminderDue(ev.reminder, ev.missed);
     else if (ev.type === "watch") watchNotice(ev.notice);
+    else if (ev.type === "app") appEvent(ev);
+    else if (ev.type === "apps") { if (S.config) S.config.apps = ev.apps || []; } // the list changed (YOUR APPS, or add_app)
     else if (ev.type === "approval_done" && ev.runId) closeApproval(ev.id);
     else { const back = caps.onEvent(ev); if (back) minionBack(back); }
   });

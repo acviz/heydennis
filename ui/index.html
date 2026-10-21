@@ -213,7 +213,7 @@
   <div id="caps" class="modal">
     <div class="glass box wide caps">
       <h2>CAPABILITIES</h2>
-      <nav class="tabs"><button type="button" data-tab="skills">SKILLS</button><button type="button" data-tab="minions">MINIONS</button><button type="button" data-tab="mcp">CONNECTED APPS</button><button type="button" data-tab="docs">DOCUMENTS</button><button type="button" data-tab="msg">MESSAGING</button></nav>
+      <nav class="tabs"><button type="button" data-tab="skills">SKILLS</button><button type="button" data-tab="minions">MINIONS</button><button type="button" data-tab="apps">YOUR APPS</button><button type="button" data-tab="mcp">CONNECTED APPS</button><button type="button" data-tab="docs">DOCUMENTS</button><button type="button" data-tab="msg">MESSAGING</button></nav>
 
       <section data-pane="skills">
         <p class="hint">Packaged know-how in the same SKILL.md format as Claude's skills: a folder with instructions and any reference files. D.E.N.N.I.S. sees each skill's description and reads the full instructions only when a request needs it. Scripts inside a skill are never run on this computer.</p>
@@ -238,6 +238,24 @@
         <label class="check"><input type="checkbox" id="brief-minions"> Brief me as soon as a minion reports back</label>
         <div class="lbl">Recent work</div>
         <div id="minion-runs" class="list"></div>
+      </section>
+
+      <section data-pane="apps" hidden>
+        <p class="hint">Programs and web apps D.E.N.N.I.S. may open when you ask - "open Mirsam", "launch Premiere". Only these: he never runs anything else. For a web app that has to be started first, like Mirsam, give both the script that starts it and its page: he runs the script if the page isn't answering, then opens the page in his own browser window once it is.</p>
+        <div id="app-list" class="list"></div>
+        <details id="app-form"><summary>ADD AN APP</summary>
+          <div class="grid">
+            <label>Name<input id="app-name" maxlength="40" placeholder="e.g. Mirsam"></label>
+            <label>Web pages open in<select id="app-where"><option value="dennis">his browser window, here</option><option value="browser">your own browser</option></select></label>
+            <label class="span2">Program, script or shortcut - not needed for a website<input id="app-run" placeholder="e.g. E:\ComfyUI\Start Mirsam.bat"></label>
+            <div class="span2 addroot"><input id="app-find" placeholder="...or find it by name, in the Start menu and on the desktop"><button type="button" id="app-find-go">FIND</button><button type="button" id="app-browse">BROWSE...</button></div>
+            <div id="app-found" class="span2 list"></div>
+            <label class="span2">Web page - for a web app or a website<input id="app-page" placeholder="e.g. http://127.0.0.1:8188/mirsam/"></label>
+            <label class="span2">Ready check (optional) - an address that answers only once it's fully up<input id="app-ready" placeholder="defaults to the web page, e.g. http://127.0.0.1:8188/system_stats"></label>
+          </div>
+          <div class="row end"><button type="button" id="app-cancel">CANCEL</button><button type="button" id="app-save" class="yes">SAVE APP</button></div>
+        </details>
+        <small>He can add one himself when you ask ("add Premiere to my apps"): he shows you exactly what would run and waits for your yes. Programs open the way a double-click would.</small>
       </section>
 
       <section data-pane="mcp" hidden>

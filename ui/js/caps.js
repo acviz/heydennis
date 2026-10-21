@@ -1,4 +1,4 @@
-// The Capabilities panel (skills, minions, MCP connections, document skills, messaging) and
+// The Capabilities panel (skills, minions, your apps, MCP connections, document skills, messaging) and
 // the small MINIONS widget that shows who's out working.
 import { api } from "./api.js";
 
@@ -7,7 +7,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 const ago = (ms) => { const s = Math.max(0, Math.round((Date.now() - ms) / 1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h`; };
 
 export class Caps {
-  /** hooks: toast(msg, err), getConfig(), saveSettings(patch), showReport(run) */
+  /** hooks: toast(msg, err), getConfig(), saveSettings(patch), showReport(run), setApps(list), showUi(event) */
   constructor(hooks) {
     this.h = hooks;
     this.runs = new Map();
@@ -24,6 +24,16 @@ export class Caps {
     // minions
     $("#minion-save").onclick = () => this.defineMinion();
     $("#brief-minions").onchange = (e) => this.h.saveSettings({ briefMinions: e.target.checked });
+    // your apps
+    $("#app-save").onclick = () => this.saveApp();
+    $("#app-cancel").onclick = () => this.editApp(null);
+    $("#app-find-go").onclick = () => this.findApps();
+    $("#app-find").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); this.findApps(); } });
+    $("#app-browse").onclick = async () => {
+      const r = await api.appsDo({ action: "pick" }).catch((e) => ({ error: e.message }));
+      if (r.error) this.h.toast(r.error, true);
+      if (r.path) this.pickRun(r.path);
+    };
     // mcp
     $("#mcp-save").onclick = () => this.saveMcp();
     $("#mcp-reconnect").onclick = () => api.mcpDo({ action: "reconnect" }).then(() => this.h.toast("Reconnecting...")).catch((e) => this.h.toast(e.message, true));
@@ -57,7 +67,7 @@ export class Caps {
   async open(tab = "skills") {
     this.el.classList.add("show");
     this.tab(tab);
-    await Promise.all([this.loadSkills(), this.loadMinions(), this.loadMcp(), this.loadMessaging()]).catch((e) => this.h.toast(e.message, true));
+    await Promise.all([this.loadSkills(), this.loadMinions(), this.loadApps(), this.loadMcp(), this.loadMessaging()]).catch((e) => this.h.toast(e.message, true));
     const cfg = this.h.getConfig() || {};
     $("#docs-on").checked = cfg.docSkills?.enabled !== false;
     const on = new Set(cfg.docSkills?.skills || ["docx", "pptx", "xlsx", "pdf"]);
@@ -69,6 +79,83 @@ export class Caps {
   tab(name) {
     this.el.querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
     this.el.querySelectorAll("[data-pane]").forEach((p) => (p.hidden = p.dataset.pane !== name));
+  }
+
+  // ---------------------------------------------------------------- your apps (server/apps.js)
+  async loadApps() {
+    const { apps, canPick } = await api.apps();
+    this.apps = apps;
+    this.h.setApps?.(apps);
+    $("#app-browse").hidden = !canPick;
+    const list = $("#app-list");
+    list.innerHTML = apps.length ? "" : `<div class="empty">No apps yet. Add one below - or tell D.E.N.N.I.S. "add Premiere to my apps".</div>`;
+    const what = (a) => (a.page && a.run ? `${a.page}  \u00b7  started by ${a.run}` : a.page ? `${a.page}${a.where === "browser" ? "  \u00b7  in your browser" : ""}` : a.run);
+    for (const a of apps) {
+      const row = document.createElement("div");
+      row.className = "item app";
+      row.innerHTML = `<span class="dot"></span><div class="txt"><b>${esc(a.name)}</b><small>${esc(what(a))}</small></div><div class="acts"><button type="button" data-a="open">OPEN</button><button type="button" data-a="edit">EDIT</button><button type="button" class="x" data-a="remove" title="Remove">&times;</button></div>`;
+      row.onclick = (e) => {
+        const act = e.target.closest("[data-a]")?.dataset.a;
+        if (act === "open") this.openApp(a.name);
+        if (act === "edit") this.editApp(a);
+        if (act === "remove") this.saveApps(this.apps.filter((x) => x !== a), `Removed ${a.name}`);
+      };
+      list.appendChild(row);
+      if (a.page) api.appsDo({ action: "check", name: a.name }).then((r) => { const d = $(".dot", row); d.classList.add(r.up ? "up" : "down"); d.title = r.up ? "Running" : "Not running - opening it starts it"; }).catch(() => {});
+    }
+  }
+  async openApp(name) {
+    const r = await api.appsDo({ action: "open", name }).catch((e) => ({ ok: false, error: e.message }));
+    if (!r.ok) return this.h.toast(r.error, true);
+    this.close();
+    if (r.show) this.h.showUi?.(r.show);
+    this.h.toast(r.starting ? `Starting ${name} - it opens here once it's ready` : `Opening ${name}`);
+  }
+  editApp(a) {
+    this.editing = a ? a.name : null;
+    $("#app-name").value = a?.name || "";
+    $("#app-run").value = a?.run || "";
+    $("#app-page").value = a?.page || "";
+    $("#app-ready").value = a?.ready || "";
+    $("#app-where").value = a?.where || "dennis";
+    $("#app-found").innerHTML = "";
+    $("#app-form").open = !!a;
+    $("#app-form summary").textContent = a ? `EDIT ${a.name.toUpperCase()}` : "ADD AN APP";
+    if (a) $("#app-name").focus();
+  }
+  pickRun(p) {
+    $("#app-run").value = p;
+    if (!$("#app-name").value.trim()) $("#app-name").value = p.split(/[\\/]/).pop().replace(/\.(lnk|url|exe|bat|cmd|app|appref-ms)$/i, "").replace(/\s*-\s*Shortcut$/i, "").replace(/^Start\s+/i, "");
+  }
+  async findApps() {
+    const q = $("#app-find").value.trim();
+    const box = $("#app-found");
+    if (!q) return;
+    const r = await api.appsDo({ action: "find", query: q }).catch((e) => ({ ok: false, error: e.message }));
+    box.innerHTML = r.found?.length ? "" : `<div class="empty">${esc(r.error || `Nothing called "${q}" in the Start menu or on the desktop - try BROWSE.`)}</div>`;
+    for (const f of r.found || []) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "item found";
+      row.innerHTML = `<div class="txt"><b>${esc(f.name)}</b><small>${esc(f.path)}</small></div>`;
+      row.onclick = () => { this.pickRun(f.path); box.innerHTML = ""; };
+      box.appendChild(row);
+    }
+  }
+  async saveApp() {
+    const app = { name: $("#app-name").value.trim(), run: $("#app-run").value.trim(), page: $("#app-page").value.trim(), ready: $("#app-ready").value.trim(), where: $("#app-where").value };
+    if (!app.name) return this.h.toast("Give it a name", true);
+    if (!app.run && !app.page) return this.h.toast("It needs a program to run, a web page, or both", true);
+    const others = (this.apps || []).filter((a) => a.name !== this.editing && a.name.toLowerCase() !== app.name.toLowerCase());
+    if (await this.saveApps([...others, app], `Saved ${app.name}`, app.name)) this.editApp(null);
+  }
+  async saveApps(list, done, expect) {
+    const r = await api.appsDo({ action: "save", apps: list }).catch((e) => ({ ok: false, error: e.message }));
+    if (!r.ok) { this.h.toast(r.error || "Couldn't save", true); return false; }
+    if (expect && !r.apps.some((a) => a.name === expect)) { this.h.toast("That web address doesn't look right", true); return false; }
+    this.h.toast(done);
+    await this.loadApps();
+    return true;
   }
 
   // ---------------------------------------------------------------- skills

@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { cleanApps } from "./apps.js";
 
 export const DATA_DIR = process.env.DENNIS_HOME || path.join(os.homedir(), ".dennis");
 const CONFIG_PATH = path.join(DATA_DIR, "config.json");
@@ -35,6 +36,7 @@ const DEFAULTS = {
     teams: { enabled: false, tenant: "organizations", clientId: "", chatId: "", chatName: "", pollSeconds: 6, account: "", inboxFolder: "", inboxPrefix: true },
     forward: { reminders: true, minions: true, watcher: true, approvals: true, awayOnly: true, awayMinutes: 10, via: "whatsapp" },
   },
+  apps: [], // apps you've authorized him to open (apps.js): [{ name, run, page, ready, where }]
   skillsDisabled: [], // ids of installed skills (~/.dennis/skills) that are switched off
   mcpServers: {}, // MCP servers, same shape as Claude Desktop's: { name: { command, args, env } | { url, headers } }
   docSkills: { enabled: true, skills: ["docx", "pptx", "xlsx", "pdf"] }, // Anthropic's document skills, in the cloud sandbox
@@ -122,7 +124,7 @@ export class Config {
   /** Apply a partial update from the settings screen. Only known keys are accepted. */
   update(patch = {}) {
     const allowed = ["userName", "address", "personality", "model", "effort", "webSearch", "permissionMode", "roots", "showHidden", "voice", "hands", "visuals",
-      "skillsDisabled", "mcpServers", "docSkills", "minions", "briefMinions", "provider", "brains", "location", "briefOnBoot", "watch", "remote"];
+      "skillsDisabled", "mcpServers", "docSkills", "minions", "briefMinions", "provider", "brains", "location", "briefOnBoot", "watch", "remote", "apps"];
     for (const k of allowed) {
       if (!(k in patch)) continue;
       if (k === "roots") {
@@ -157,6 +159,8 @@ export class Config {
         if (r.forward && "via" in r.forward && !["whatsapp", "teams", "both"].includes(r.forward.via)) delete r.forward.via;
         if (r.teams && "inboxFolder" in r.teams) r.teams.inboxFolder = String(r.teams.inboxFolder || "").trim().replace(/^"(.*)"$/, "$1");
         this.data.remote = deepMerge(this.data.remote, r);
+      } else if (k === "apps") {
+        this.data.apps = cleanApps(patch.apps); // replaced whole, so apps can be removed
       } else if (k === "visuals") {
         const v = patch.visuals && typeof patch.visuals === "object" ? { ...patch.visuals } : {};
         if ("theme" in v && !["reactor", "spiral", "neural", "grid"].includes(v.theme)) delete v.theme;

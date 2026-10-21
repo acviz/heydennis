@@ -3,7 +3,9 @@
 // storage, native open/reveal, a folder picker, camera/mic permission prompts,
 // a global shortcut to summon D.E.N.N.I.S. from anywhere, fullscreen, reboot, and the
 // compact mode: just the core, floating on the desktop in a small transparent window.
-import { app, BrowserWindow, session, shell, safeStorage, dialog, globalShortcut, systemPreferences, Menu, ipcMain, screen, desktopCapturer } from "electron";
+// Also his browser: web pages (and web apps such as Mirsam) in <webview> windows of the
+// interface, locked down below - their own session, no Node, no preload, never our own origin.
+import { app, BrowserWindow, session, shell, safeStorage, dialog, globalShortcut, systemPreferences, Menu, ipcMain, screen, desktopCapturer, webContents } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +14,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD = path.join(HERE, "preload.cjs");
 const SUMMON = "CommandOrControl+Shift+Space";
 const ORB_SIZE = 280; // room for the glow around the core
+const WEB_PARTITION = "persist:dennis-web"; // the browser's own cookies and logins, apart from the interface's
+const plainUA = (ua) => ua.replace(/\s(Electron|dennis[\w-]*|DENNIS)\/\S+/gi, ""); // as Chrome; some sites turn away "Electron"
 
 let win = null;
 let srv = null;
@@ -19,7 +23,18 @@ let orb = null; // the compact-mode window
 let compact = false;
 let dataDir = "";
 
-if (!app.requestSingleInstanceLock()) app.quit();
+// One D.E.N.N.I.S. at a time. Opening him again just brings the running one forward; this copy
+// exits at once, before it starts a server or a window. A reboot's new copy (--relaunched) may
+// arrive while the old one is still closing, so it waits a few seconds for the lock instead.
+const RELAUNCHED = process.argv.includes("--relaunched");
+async function singleInstance() {
+  if (app.requestSingleInstanceLock()) return true;
+  for (let i = 0; RELAUNCHED && i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    if (app.requestSingleInstanceLock()) return true;
+  }
+  return false;
+}
 app.on("second-instance", () => {
   if (compact) return setCompact(false);
   if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
@@ -34,6 +49,7 @@ const secrets = {
 const platform = {
   electron: true,
   async openPath(p) { return shell.openPath(p); }, // "" on success, else an error message
+  async openUrl(u) { try { await shell.openExternal(u); return ""; } catch (e) { return e.message; } },
   revealPath(p) { shell.showItemInFolder(p); },
   async pickFolder() {
     const r = await dialog.showOpenDialog(win, { title: "Choose a folder for D.E.N.N.I.S.", properties: ["openDirectory"] });
@@ -88,6 +104,13 @@ async function startCore() {
     cb(fromUs && ["media", "fullscreen", "clipboard-sanitized-write"].includes(permission));
   });
   ses.setPermissionCheckHandler((wc, permission, requestingOrigin) => !!requestingOrigin?.startsWith(origin) && ["media", "fullscreen"].includes(permission));
+  // the browser: web pages get no camera, microphone, location or notifications - fullscreen and copying only.
+  // It introduces itself as plain Chrome (some sites turn away an "Electron" browser).
+  const web = session.fromPartition(WEB_PARTITION);
+  const WEB_OK = ["fullscreen", "clipboard-sanitized-write"];
+  web.setPermissionRequestHandler((wc, permission, cb) => cb(WEB_OK.includes(permission)));
+  web.setPermissionCheckHandler((wc, permission) => WEB_OK.includes(permission));
+  web.setUserAgent(plainUA(web.getUserAgent()));
   if (process.platform === "darwin") {
     for (const m of ["camera", "microphone"]) { try { await systemPreferences.askForMediaAccess(m); } catch { /* user can grant later in System Settings */ } }
   }
@@ -110,7 +133,7 @@ async function createWindow() {
     icon: path.join(HERE, "..", "build", "icon.png"),
     autoHideMenuBar: true,
     show: false,
-    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, plugins: true, backgroundThrottling: false, preload: PRELOAD },
+    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, plugins: true, backgroundThrottling: false, preload: PRELOAD, webviewTag: true },
   });
   Menu.setApplicationMenu(process.platform === "darwin" ? Menu.buildFromTemplate([{ role: "appMenu" }, { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" }]) : null);
   win.once("ready-to-show", () => { win.show(); });
@@ -200,7 +223,59 @@ function setCompact(on) {
   o?.destroy(); // frees its GPU work; it's rebuilt next time
   win.webContents.send("shell:compact", false);
 }
-function relaunch() { app.relaunch(); app.quit(); }
+// once only: on Windows every app.relaunch() call starts its own new copy when this one exits
+let relaunching = false;
+function relaunch() {
+  if (relaunching) return;
+  relaunching = true;
+  app.relaunch({ args: [...process.argv.slice(1).filter((a) => a !== "--relaunched"), "--relaunched"] });
+  app.quit();
+}
+
+// ---------------------------------------------------------------- his browser: <webview> guests
+/** Web pages only (http/https), and never the interface itself: a page must not reach his API. */
+const webUrlOk = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) && (!origin || x.origin !== origin); } catch { return false; } };
+app.on("web-contents-created", (_e, contents) => {
+  // only the main window may embed pages, and each one is locked down however the page asked for it
+  contents.on("will-attach-webview", (e, prefs, params) => {
+    delete prefs.preload;
+    Object.assign(prefs, { nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, sandbox: true, webSecurity: true, allowRunningInsecureContent: false });
+    params.partition = WEB_PARTITION;
+    if (!win || contents !== win.webContents || !webUrlOk(params.src)) e.preventDefault();
+  });
+  if (contents.getType() !== "webview") return;
+  contents.setUserAgent(plainUA(contents.getUserAgent()));
+  // pop-ups (target=_blank, window.open) open as another browser window in the interface
+  contents.setWindowOpenHandler(({ url }) => { if (webUrlOk(url)) win?.webContents.send("web:open", url); return { action: "deny" }; });
+  const guard = (e, url) => { if (!webUrlOk(url)) e.preventDefault(); };
+  contents.on("will-navigate", guard);
+  contents.on("will-redirect", guard);
+});
+/** A browser window's page, if it really is one of the main window's. */
+function guest(e, id) {
+  if (!fromUs(e) || !win) return null;
+  const wc = webContents.fromId(Number(id));
+  return wc && !wc.isDestroyed() && wc.getType() === "webview" && wc.hostWebContents === win.webContents ? wc : null;
+}
+const within = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error("the page took too long to answer")), ms))]);
+ipcMain.handle("web:read", async (e, id) => {
+  const wc = guest(e, id);
+  if (!wc) return { ok: false, error: "No web page is open." };
+  try {
+    const r = await within(wc.executeJavaScript("({ title: document.title, url: location.href, text: (document.body ? document.body.innerText : '').slice(0, 60000) })", false), 8000);
+    return { ok: true, title: String(r?.title || wc.getTitle()), url: wc.getURL(), text: String(r?.text || "") };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle("web:look", async (e, id) => {
+  const wc = guest(e, id);
+  if (!wc) return { ok: false, error: "No web page is open." };
+  try {
+    let img = await within(wc.capturePage(), 8000);
+    if (img.isEmpty()) return { ok: false, error: "The page isn't on screen to capture." };
+    if (img.getSize().width > 1600) img = img.resize({ width: 1600, quality: "good" });
+    return { ok: true, title: wc.getTitle(), url: wc.getURL(), jpeg: img.toJPEG(80).toString("base64") };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
 
 // IPC from our own pages only
 const fromUs = (e) => { try { return !!origin && new URL(e.senderFrame.url).origin === origin; } catch { return false; } };
@@ -233,7 +308,10 @@ ipcMain.on("orb:menu", async (e) => {
   ]).popup({ window: orb });
 });
 
-app.whenReady().then(startCore).then(createWindow).catch((e) => {
+singleInstance().then((first) => {
+  if (!first) return app.exit(0); // the running copy has been asked to come forward
+  return app.whenReady().then(startCore).then(createWindow);
+}).catch((e) => {
   dialog.showErrorBox("D.E.N.N.I.S. couldn't start", String(e?.stack || e));
   app.quit();
 });

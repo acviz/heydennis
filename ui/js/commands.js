@@ -2,8 +2,9 @@
 // brain, so they happen the moment you finish speaking. Anything that isn't plainly one of
 // these goes to D.E.N.N.I.S. as usual - when in doubt, this returns null.
 //
-// matchCommand(text, { places }) -> { action, arg?, ack } | null
+// matchCommand(text, { places, apps }) -> { action, arg?, ack } | null
 //   places: [{ name, path, isDir }] - mapped folders and what's on screen, for "open X"
+//   apps: names of the apps they've authorized, for "open Mirsam" / "launch Premiere"
 const FILLER = new Set("please pls dennis denis hey ok okay alright now just can could would will you for me mate thanks thank".split(" "));
 
 function norm(text) {
@@ -13,7 +14,7 @@ function norm(text) {
 const is = (t, ...alts) => alts.some((a) => new RegExp(`^(?:${a})$`).test(t));
 const THEME_ACK = { reactor: "Back to the classic.", spiral: "Spiral it is. Mind the light trails.", neural: "Neural. Feeling rather brainy.", grid: "Into the grid." };
 
-export function matchCommand(text, { places = [] } = {}) {
+export function matchCommand(text, { places = [], apps = [] } = {}) {
   const t = norm(text);
   if (!t || t.split(" ").length > 7) return null;
   if (is(t, "home", "to the home( screen)?", "back home", "show (me )?(the )?(overview|home|everything|all( my)? folders)", "overview")) return { action: "home", ack: "Overview." };
@@ -53,6 +54,14 @@ export function matchCommand(text, { places = [] } = {}) {
   if (is(t, "(next|another|different|switch|change|cycle)( the)? (theme|look|style)", "(switch|change) (the )?(themes|looks)")) return { action: "theme", arg: "next", ack: "" };
   if (is(t, "(next|switch) (tab|window)")) return { action: "nextWindow", ack: "" };
   if (is(t, "previous (tab|window)")) return { action: "prevWindow", ack: "" };
+  // "open Mirsam" / "launch Premiere" / "bring up Mirsam": only when it names an app they've authorized
+  const a = /^(?:open|launch|start|run|load|fire up|boot up|up|pull up|show)\s+(?:up\s+)?(?:my |the )?(.+?)(?: app| application| program)?$/.exec(t);
+  if (a && apps.length) {
+    const want = a[1].trim(), key = (n) => norm(n);
+    const starts = want.length >= 3 ? apps.filter((n) => key(n).startsWith(want)) : [];
+    const hit = apps.find((n) => key(n) === want) || (starts.length === 1 ? starts[0] : null);
+    if (hit) return { action: "app", arg: hit, ack: "" };
+  }
   // "open Downloads" / "show me the Renders folder": only when it names a folder that's mapped or on screen
   const m = /^(?:open|show|to)\s+(?:my |the )?(.+?)(?: folder)?$/.exec(t); // ("go"/"take" and "me" are already gone)
   if (m) {

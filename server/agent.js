@@ -15,6 +15,7 @@ import { listSkills } from "./skills.js";
 import { McpHub } from "./mcp.js";
 import { MinionManager } from "./minions.js";
 import { brainOf, brainMissing, callCompat, BrainError } from "./brains.js";
+import { cleanApps, describeApp } from "./apps.js";
 
 const BETAS = [
   "server-side-fallback-2026-07-01", // fallbacks: "default" - a false-positive refusal retries on another model
@@ -31,6 +32,7 @@ function systemPrompt(config, { skills = [], minions = [], docs = false, mcp = [
   const roots = config.get("roots") || [];
   const memory = readMemory().trim();
   const tweaks = String(config.get("personality") || "").trim().slice(0, 2000);
+  const apps = cleanApps(config.get("apps"));
   return `You are D.E.N.N.I.S. - Digital Entity Neural Network Intelligent System - the personal virtual production assistant of ${name}. You run on their own computer and you can see and organise the files in the folders they have mapped for you. They see you as a glowing core at the centre of a 3D "galaxy" of their files, which they steer with hand gestures through their webcam, the mouse, or by voice.
 
 # Personality
@@ -74,7 +76,7 @@ search_files searches names across all of them; list_folder reads a folder live.
 # Changing things
 - You can create files and folders and move or rename things. You cannot delete anything and nothing is ever overwritten; if they want something deleted, tell them to do it themselves (or offer to move it into a folder they can review).
 - Opening, creating and moving may need their confirmation on screen; the app handles that. If they decline, accept it and don't retry.
-- You never launch programs, scripts or installers.
+- You never launch programs, scripts or installers - only the apps they've authorized (below).
 
 # Skills
 ${skills.length ? `Installed skills - packaged know-how for particular jobs. When a request matches one, call use_skill with its name first and follow it:
@@ -85,6 +87,12 @@ If they teach you a repeatable way of doing something, offer to save it as a ski
 You can send minions - worker agents - off on tasks with deploy_minion while you carry on with ${name}. Use them for work that takes a while or splits into independent parts (research, surveying big folders, drafting documents); for a quick answer, just do it yourself. Brief each one completely: it can't ask questions. Their reports reach you in later messages inside <minion_report> blocks; pass on the substance in a sentence or two, and act on it if that was the plan. Your minions:
 ${minions.map((d) => `- ${d.name}: ${d.role} (toolsets: ${d.tools.join(", ")})`).join("\n") || "- (none yet)"}
 create_minion makes a new one; minion_status and recall_minion check on them and call them back.
+
+# Apps and the web
+${apps.length ? `Apps ${name} has authorized - open them with open_app whenever they ask; no need to check first:
+${apps.map((a) => `- ${a.name}: ${describeApp(a)}`).join("\n")}` : "No apps are authorized yet."}
+Those are the only programs you can open. For any other, offer add_app: it shows them exactly what would run and waits for their yes.
+You have a web browser in a window of your own (the browser tool): open pages there rather than describing them, read a page when they ask about what's on it, look at it when it's visual (an image Mirsam made, a layout). A web app you open with open_app shows in the same window.
 
 # Diagrams
 When a picture explains it better than words - signal flow and wiring (cameras, LED processors, media servers, tracking), a pipeline, a schedule, who does what, a folder structure - draw it with show_diagram. Keep it to the essentials (about 25 boxes at most) with short labels, then say a sentence about it; don't read it out.
@@ -113,6 +121,7 @@ function contextBlock(ctx = {}) {
   ];
   if (ctx.view) lines.push(`on_screen: ${ctx.view}`);
   if (ctx.selected) lines.push(`selected_file: ${ctx.selected}`);
+  if (ctx.page) lines.push(`web_page_on_screen: ${String(ctx.page).slice(0, 300)} (in your browser window; its title is as the page gives it)`);
   if (ctx.input === "briefing") lines.push("input: none - the app is asking for the daily briefing at start-up. Call briefing_data, then brief them.");
   else if (ctx.input === "notes") lines.push("input: a meeting transcript the app just recorded (speech-to-text, no speaker names; expect small errors). Write it up as asked below.");
   else if (ctx.input === "event") lines.push("input: none - this message is an automatic notice from the app (one of your minions reported back), not something the user said. Brief them on it in one to three spoken sentences, then stop.");
@@ -342,6 +351,7 @@ export class Agent {
       minions: this.minions,
       reminders: this.reminders,
       remote: this.remote || null,
+      apps: this.apps || null,
       generated: opts.generated || null,
       safe: (p, opts) => this.platform.resolveSafe(p, roots(), opts),
       ui: (event) => emit({ type: "ui", ...event }),

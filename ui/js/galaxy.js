@@ -926,11 +926,11 @@ export class Galaxy {
   // nearest the camera, so it's drawn and clicked on top. The last one in `this.wins` is in front.
 
   /** Open a window for `el` at the card for `path` (in front). Returns its id. */
-  openWindow(el, path) {
+  openWindow(el, path, { flat = false } = {}) {
     const obj = new CSS3DObject(el);
     el.style.opacity = "0";
     this.winScene.add(obj);
-    const w = { id: ++this.winSeq, obj, el, path, node: path ? this.nodeByPath(path) : null, t0: performance.now(), closing: 0, max: 0, maxGoal: 0, pos: null, screen: null, size: null, snap: false, sx: 0, sy: 0, ww: 0, wh: 0 };
+    const w = { id: ++this.winSeq, obj, el, path, node: path ? this.nodeByPath(path) : null, t0: performance.now(), closing: 0, max: 0, maxGoal: 0, pos: null, screen: null, size: null, snap: false, sx: 0, sy: 0, ww: 0, wh: 0, flat };
     this.wins.push(w);
     this.lastInput = performance.now();
     return w.id;
@@ -1045,7 +1045,7 @@ export class Galaxy {
           sy = (1 - p.y) * 0.5 * this.h;
         }
         sx = Math.min(this.w - right - fw / 2, Math.max(left + fw / 2, sx));
-        sy = Math.min(this.h - bottom - fh / 2, Math.max(top + fh / 2, sy)) + Math.sin(this.t * 0.8 + w.id) * 3; // a slow hover
+        sy = Math.min(this.h - bottom - fh / 2, Math.max(top + fh / 2, sy)) + (w.flat ? 0 : Math.sin(this.t * 0.8 + w.id) * 3); // a slow hover
       }
       sx += (this.w / 2 - sx) * m;
       sy += (maxTop + (this.h - maxTop - 24) / 2 - sy) * m;
@@ -1060,7 +1060,7 @@ export class Galaxy {
       let scale = depth / fovPx; // one CSS pixel per screen pixel at that depth
       let pos = w.pos;
       let alpha = 1;
-      const tilt = -((sx - this.w / 2) / this.w) * 0.26 * (1 - m); // angled toward the centre like a curved HUD
+      const tilt = w.flat ? 0 : -((sx - this.w / 2) / this.w) * 0.26 * (1 - m); // angled toward the centre like a curved HUD (web pages stay flat)
       // opening: grow out of the card; closing: fold back into it
       const open = easeInOut(Math.min(1, (now - w.t0) / 520));
       const close = w.closing ? easeInOut(Math.min(1, (now - w.closing) / 380)) : 0;

@@ -25,6 +25,7 @@ import { applyUndo } from "./tools.js";
 import { Reminders } from "./reminders.js";
 import { FolderWatcher } from "./watcher.js";
 import { RemoteHub } from "./remote.js";
+import { AppLauncher, findApps } from "./apps.js";
 import tls from "node:tls";
 
 // Outgoing HTTPS trusts the operating system's certificates as well as Node's own, as browsers do: on a
@@ -85,6 +86,9 @@ export async function startServer({ config, platform, mock = false, port } = {})
   remote.start().catch((e) => console.error("[remote]", e));
   agent.broadcast = (ev) => { broadcast(ev); remote.onEvent(ev); }; // minion progress and approvals reach every open window (and your phone)
   agent.mcp.onChange((servers) => broadcast({ type: "mcp", servers }));
+  // apps you've authorized (apps.js); a web app that has to start first opens in every window once it answers
+  const apps = new AppLauncher({ config, platform, broadcast: (ev) => broadcast(ev) });
+  agent.apps = apps;
   agent.mcp.start(); // connects in the background
   // reminders go off in every open window; with none open they wait (and are announced as missed)
   // the folder watcher: new batches of files and low disk space, said once (see watcher.js)
@@ -505,6 +509,22 @@ export async function startServer({ config, platform, mock = false, port } = {})
       } catch (e) { return send(res, 200, { ok: false, error: e.message }); }
       return send(res, 400, { error: "unknown action" });
     }
+    // ---- apps you've authorized (apps.js)
+    if (route === "/apps" && isGet) return send(res, 200, { apps: apps.list(), canPick: !!platform.pickFile, browser: !!platform.electron });
+    if (route === "/apps" && req.method === "POST") {
+      const b = await readJson(req);
+      try {
+        if (b.action === "save") { config.update({ apps: b.apps }); agent.conv = null; broadcast({ type: "apps", apps: apps.list() }); return send(res, 200, { ok: true, apps: apps.list() }); } // the list is in his prompt; windows hear of it for "open X"
+        if (b.action === "find") return send(res, 200, { ok: true, found: findApps(b.query || "") });
+        if (b.action === "pick") {
+          const p = await platform.pickFile?.({ title: "Choose the program, script or shortcut", filters: [{ name: "Programs and shortcuts", extensions: ["exe", "bat", "cmd", "lnk", "url", "appref-ms", "app"] }, { name: "All files", extensions: ["*"] }] });
+          return send(res, 200, { ok: !!p, path: p || null });
+        }
+        if (b.action === "open") { const r = await apps.open(String(b.name || "")); return send(res, 200, r.error ? { ok: false, error: r.error } : { ok: true, ...r }); }
+        if (b.action === "check") { const a = apps.find(b.name); return send(res, 200, { ok: !!a, up: a?.page ? await apps.isUp(a) : null }); }
+      } catch (e) { return send(res, 200, { ok: false, error: e.message }); }
+      return send(res, 400, { error: "unknown action" });
+    }
     if (route === "/pick-folder" && req.method === "POST") {
       if (!platform.pickFolder) return send(res, 200, { path: null });
       return send(res, 200, { path: await platform.pickFolder() });
@@ -574,6 +594,7 @@ export async function startServer({ config, platform, mock = false, port } = {})
       agent.reminders?.close();
       watcher.close();
       remote.close();
+      apps.close();
       await agent.mcp.close().catch(() => {}); // stops local MCP server processes
       await new Promise((r) => { for (const c of eventClients) c.end(); server.close(() => r()); });
     },

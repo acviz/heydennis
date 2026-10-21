@@ -47,6 +47,9 @@ export const api = {
   remoteDo: (body) => req("POST", "/api/remote", body),
   presence: () => req("POST", "/api/presence", {}),
   saveDiagram: (title, svg, png) => req("POST", "/api/diagram-save", { title, svg, png }),
+  // apps you've authorized (Capabilities > YOUR APPS)
+  apps: () => req("GET", "/api/apps"),
+  appsDo: (body) => req("POST", "/api/apps", body),
 
   /** Server-sent events for background status (index progress). */
   events(onEvent) {

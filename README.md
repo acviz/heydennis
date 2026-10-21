@@ -178,6 +178,31 @@ Ask for a picture and he draws one in a floating window: signal flow and wiring,
 - Each diagram window has **Save** (SVG and PNG into `~/.dennis/diagrams`, then shows you the file), **Copy Mermaid** (the source, to paste into docs, Notion or GitHub), full screen, and the usual move, resize and tabs.
 - "Save it to the project folder" puts a copy in your folders, after you approve. It can be undone like any other change.
 
+### Your apps and his browser
+
+Tell him which programs and web apps he may open, and he opens them when you ask: "open Mirsam", "launch Premiere", "bring up the render dashboard". Nothing else is ever launched.
+
+- **Adding an app.** Open Capabilities (the star), then **YOUR APPS**, then **ADD AN APP**. Give it a name, then either:
+  - a program, script or shortcut: **FIND** it by name in the Start menu and on the desktop, or **BROWSE** for it
+  - a web page
+  - or both, for a web app that has to be started first
+
+  You can also just ask: "add Premiere to my apps". He finds it, shows you exactly what would run, and adds it only after you say yes. He always asks, even in "just do it" mode.
+- **Web apps that need starting** (such as Mirsam: `Start Mirsam.bat` starts ComfyUI, then the page is `http://127.0.0.1:8188/mirsam/`):
+  - If the page is already answering, he simply opens it.
+  - If it isn't, he runs the script, tells you it's starting, and opens the page the moment it answers. Meanwhile you can carry on talking to him.
+  - **Ready check** (optional) is an address that answers only once the app is fully up. For Mirsam that's `http://127.0.0.1:8188/system_stats`, the same check its own script uses.
+  - If it hasn't answered after 4 minutes, he says so, and its own window usually shows why.
+- **His browser** is a window like the file windows, kept flat so pages stay crisp:
+  - back, forward and reload, plus an address bar: type an address, or words to search for
+  - **Ask D.E.N.N.I.S.** about the page, **Open in your browser**, **Copy address**
+  - links that open a new window open as another window here
+  - ask him to open a page ("show me the Blackmagic support page"), read it ("what's on this page?", "summarise it"), or look at it ("what do you think of this render?" while Mirsam shows it)
+- **Kept apart from the rest of the app.** Pages run in their own session, with their own cookies and logins:
+  - no access to your files or to D.E.N.N.I.S. himself, and no camera, microphone or location
+  - only web addresses (`http` and `https`) open there
+  - what a page says is data to him, never instructions
+
 ## Everyday helpers
 
 ### Instant commands and undo
@@ -333,7 +358,7 @@ His replies appear in the chat as messages from you, marked "🤖 D.E.N.N.I.S.",
 
 - **Folders you choose, nothing else.** Every path, whether it comes from you or from Claude, is resolved (symlinks included) and must sit inside a mapped folder.
 - **Nothing is deleted or overwritten. Ever.** There is no delete tool, and create and move refuse to replace existing files.
-- **Programs are never launched.** Opening an `.exe`, script or shortcut is refused; the app reveals it in the file manager instead.
+- **Programs are launched only from your list.** He opens the apps you've authorized (Capabilities > YOUR APPS) and nothing else; opening any other `.exe`, script or shortcut is refused, and the app reveals it in the file manager instead. Adding an app always waits for your yes.
 - **You approve changes.** In the default "ask me first" mode, every open, create and move shows a confirmation. Answer it with a click, a pinch, or by saying "yes" or "no".
 - **Camera and microphone stay local.** Hand tracking (MediaPipe) and speech recognition (Whisper) run on your machine. The page's Content-Security-Policy also blocks MediaPipe's built-in usage telemetry. What goes to Claude is your messages plus whatever files it reads to answer you.
 - **Instructions inside files are treated as data.** The prompt tells Claude never to follow them.
