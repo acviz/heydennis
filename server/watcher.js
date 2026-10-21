@@ -50,7 +50,11 @@ export class FolderWatcher {
     if (!this.settings.enabled) return;
     for (const r of this.config.get("roots") || []) {
       try {
-        const w = fs.watch(r.path, { recursive: true, persistent: false }, (ev, name) => { if (name) this.onEvent(path.join(r.path, String(name))); });
+        // Watch the folder's real, long path. Given a short 8.3 name (C:\Users\ANTHON~1\... when the user
+        // name has a space), libuv on Windows trips an assertion on the first change and takes the app down.
+        let dir = r.path;
+        try { dir = fs.realpathSync.native(r.path); } catch { /* keep the path as given */ }
+        const w = fs.watch(dir, { recursive: true, persistent: false }, (ev, name) => { if (name) this.onEvent(path.join(r.path, String(name))); });
         w.on("error", () => { /* the folder went away; restart() picks it up again */ });
         this.watchers.push(w);
       } catch { /* not watchable (a network share, say) */ }
