@@ -29,23 +29,21 @@ function cleanForSpeech(t) {
 // ---------- languages ----------
 // A rough guess at a reply's language, to pick a voice that can say it. Scripts settle
 // Arabic, Japanese and Chinese; for Latin text, a few telltale everyday words separate
-// French and Tagalog from English.
+// French from English.
 const EN_WORDS = new Set("the and is are you your to of a in it that i for on with this be have not what can will do my at me so all was we they there".split(" "));
 const FR_WORDS = new Set("le la les de des et est vous je un une que qui pour pas dans sur avec votre nous ce ça c'est très bien mais oui merci bonjour bonsoir".split(" "));
-const TL_WORDS = new Set("ang ng mga sa ako ikaw ka ko mo siya po na ay hindi oo ito iyon kayo tayo natin namin para may wala lang din rin ba naman salamat".split(" "));
 export function textLanguage(t) {
   if (/[\u0600-\u06FF]/.test(t)) return "ar";
   if (/[\u3040-\u30FF]/.test(t)) return "ja"; // kana
   if (/[\u4E00-\u9FFF]/.test(t)) return "zh"; // han and no kana
   const words = String(t).toLowerCase().match(/[a-zà-ÿ']+/g) || [];
   const hits = (set) => words.filter((w) => set.has(w)).length;
-  const en = hits(EN_WORDS), fr = hits(FR_WORDS), tl = hits(TL_WORDS);
+  const en = hits(EN_WORDS), fr = hits(FR_WORDS);
   if (fr >= 2 && fr > en) return "fr";
-  if (tl >= 2 && tl > en) return "tl";
   return "en";
 }
-const SYSTEM_LANG = { tl: ["fil", "tl"], zh: ["zh"], ja: ["ja"], ar: ["ar"], fr: ["fr"] }; // speechSynthesis voice.lang prefixes
-const LANG_NAME = { ar: "Arabic", tl: "Tagalog", fr: "French", ja: "Japanese", zh: "Chinese" };
+const SYSTEM_LANG = { zh: ["zh"], ja: ["ja"], ar: ["ar"], fr: ["fr"] }; // speechSynthesis voice.lang prefixes
+const LANG_NAME = { ar: "Arabic", fr: "French", ja: "Japanese", zh: "Chinese" };
 
 export class Voice {
   constructor({ onSpeaking, onLevel, onStatus, onWord } = {}) {
@@ -116,17 +114,30 @@ export class Voice {
 
   /** Which engine speaks right now: the chosen one if it's usable, else the system voice. */
   engineNow() {
+    if (this.cfg.engine === "chatterbox" && !this.cbDown()) return "chatterbox";
     if (this.cfg.engine === "kokoro" && this.kokoro.ready) return "kokoro";
-    if (this.cfg.engine === "elevenlabs" && this.cfg.elevenOk && !this.elevenFailed) return "elevenlabs";
-    if (this.cfg.engine === "elevenlabs" && this.kokoro.ready) return "kokoro"; // no key yet, or ElevenLabs is down: the local voice stands in
+    if (this.cfg.engine === "elevenlabs" && this.cfg.elevenOk && !this.elevenDown()) return "elevenlabs";
+    if ((this.cfg.engine === "elevenlabs" || this.cfg.engine === "chatterbox") && this.kokoro.ready) return "kokoro"; // no key yet, or the chosen voice is down: the local voice stands in
     return "system";
   }
 
   /** The local British voice only speaks English: other languages go to ElevenLabs if it's set up, else the system voice. */
   engineFor(text) {
     const e = this.engineNow();
+    if (e === "chatterbox") return e; // every language he speaks
     if (e !== "kokoro" || textLanguage(text) === "en") return e;
-    return this.cfg.elevenOk && !this.elevenFailed ? "elevenlabs" : "system";
+    return this.cfg.elevenOk && !this.elevenDown() ? "elevenlabs" : "system";
+  }
+
+  /**
+   * After an ElevenLabs failure the local voice stands in - for a minute (a slow or busy connection), or
+   * until Settings are saved again when the key itself was refused.
+   */
+  cbDown() { return !!this.cbFailed && Date.now() - this.cbFailed < 60_000; }
+
+  elevenDown() {
+    const f = this.elevenFailed;
+    return f === Infinity || (typeof f === "number" && f > 0 && Date.now() - f < 60_000);
   }
 
   say(text) {
@@ -197,7 +208,7 @@ export class Voice {
     this.ensureOut();
     if (this.out.state === "suspended") this.out.resume().catch(() => {});
     // synthesis starts now, so sentence 2 renders while sentence 1 plays
-    const audio = engine === "kokoro" ? this.kokoroSpeak(text) : this.elevenSpeak(text);
+    const audio = engine === "kokoro" ? this.kokoroSpeak(text) : engine === "chatterbox" ? this.cbSpeak(text) : this.elevenSpeak(text);
     audio.catch(() => {});
     this.playQueue.push({ text, audio, engine });
     this.queue++;
@@ -213,7 +224,12 @@ export class Voice {
         try { buf = await job.audio; }
         catch (e) {
           console.warn(`[voice] ${job.engine} failed:`, e);
-          if (job.engine === "elevenlabs") { this.elevenFailed = true; this.onStatus(`ElevenLabs voice failed (${e.message}) - using the local voice`, true); }
+          if (job.engine === "chatterbox") { this.cbFailed = Date.now(); this.onStatus(`Chatterbox voice failed (${e.message}) - another voice stands in for a minute`, true); }
+          if (job.engine === "elevenlabs") {
+            const keyRefused = /rejected the key|\b401\b/.test(String(e.message));
+            this.elevenFailed = keyRefused ? Infinity : Date.now();
+            this.onStatus(`ElevenLabs voice failed (${e.message}) - using the local voice${keyRefused ? " until the key is fixed in Settings" : " for a minute"}`, true);
+          }
           if (gen === this.gen) this.queue = Math.max(0, this.queue - 1);
           if (gen === this.gen) this.saySystem(job.text); // say it some other way rather than skip it
           continue;
@@ -288,6 +304,16 @@ export class Voice {
     const buf = this.out.createBuffer(1, m.audio.length, m.rate);
     buf.copyToChannel(m.audio, 0);
     return buf;
+  }
+
+  /** His own voice (Chatterbox, on this computer): WAV from the local voice server. */
+  async cbSpeak(text) {
+    const res = await fetch("/api/voice/speak", { method: "POST", headers: { "Content-Type": "application/json", "X-Dennis": "1" }, body: JSON.stringify({ text, lang: textLanguage(text) }) });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    return this.out.decodeAudioData(await res.arrayBuffer());
   }
 
   async elevenSpeak(text) {
@@ -393,12 +419,14 @@ export class Voice {
     an.fftSize = 1024;
     const src = ac.createMediaStreamSource(stream);
     src.connect(an);
-    this.mic = { stream, ac, an, src, buf: new Float32Array(an.fftSize), label: stream.getAudioTracks()[0]?.label || "" };
+    const mic = (this.mic = { stream, ac, an, src, buf: new Float32Array(an.fftSize), label: stream.getAudioTracks()[0]?.label || "" });
     onConnecting?.();
     const t0 = performance.now();
-    while (performance.now() - t0 < 3000 && this.rms() < 0.0003) await sleep(40);
-    this.mic.warmMs = Math.round(performance.now() - t0);
-    return this.mic;
+    while (performance.now() - t0 < 3000 && this.mic === mic && this.rms() < 0.0003) await sleep(40);
+    // closed while it was waking up (he was stopped, or the mic changed): not an error worth a TypeError
+    if (this.mic !== mic) throw Object.assign(new Error("the microphone was closed while it was starting"), { name: "AbortError" });
+    mic.warmMs = Math.round(performance.now() - t0);
+    return mic;
   }
 
   rms() {

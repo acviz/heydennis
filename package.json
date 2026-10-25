@@ -45,11 +45,13 @@
     "files": [
       "electron/**",
       "server/**",
+      "scripts/voice-sample.mjs",
       "ui/**",
       "package.json"
     ],
     "asarUnpack": [
-      "ui/vendor/**"
+      "ui/vendor/**",
+      "server/voice/**"
     ],
     "win": {
       "target": [

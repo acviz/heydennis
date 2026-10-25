@@ -7,8 +7,10 @@
 // interface, locked down below - their own session, no Node, no preload, never our own origin.
 import { app, BrowserWindow, session, shell, safeStorage, dialog, globalShortcut, systemPreferences, Menu, ipcMain, screen, desktopCapturer, webContents } from "electron";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { dlog } from "../server/log.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD = path.join(HERE, "preload.cjs");
@@ -23,6 +25,26 @@ let orb = null; // the compact-mode window
 let compact = false;
 let dataDir = "";
 
+// His own Electron profile, in ~/.dennis/electron - not in AppData. The profile holds the key that
+// encrypts his saved API keys, and AppData isn't always the same folder: programs started from a
+// Store-packaged app (the Claude desktop app, for one) see a private copy of AppData, so a key saved
+// in one kind of launch couldn't be read in the other. His own folder is the same however he starts.
+// The first time, the profile he had is copied over (logins, settings, downloaded voice models and
+// the encryption key with them; not the caches). An explicit --user-data-dir (the tests) still wins.
+const PROFILE = path.join(process.env.DENNIS_HOME || path.join(os.homedir(), ".dennis"), "electron");
+const PROFILE_SKIP = /^(Cache|Code Cache|GPUCache|GPUPersistentCache|DawnGraphiteCache|DawnWebGPUCache|GrShaderCache|ShaderCache|Crashpad|blob_storage|lockfile|SingletonLock|SingletonCookie|SingletonSocket|DevToolsActivePort)$/i;
+if (!process.argv.some((a) => a.startsWith("--user-data-dir"))) {
+  const before = app.getPath("userData");
+  if (!fs.existsSync(path.join(PROFILE, "Local State")) && fs.existsSync(path.join(before, "Local State"))) {
+    try {
+      fs.cpSync(before, PROFILE, { recursive: true, force: false, errorOnExist: false, filter: (src) => !PROFILE_SKIP.test(path.basename(src)) });
+      dlog("SYSTEM", `moved his profile from ${before} to ${PROFILE}`);
+    } catch (e) { dlog("ERROR", `couldn't copy his profile to ${PROFILE}: ${e.message}`); }
+  }
+  fs.mkdirSync(PROFILE, { recursive: true });
+  app.setPath("userData", PROFILE);
+}
+
 // One D.E.N.N.I.S. at a time. Opening him again just brings the running one forward; this copy
 // exits at once, before it starts a server or a window. A reboot's new copy (--relaunched) may
 // arrive while the old one is still closing, so it waits a few seconds for the lock instead.
@@ -36,6 +58,7 @@ async function singleInstance() {
   return false;
 }
 app.on("second-instance", () => {
+  dlog("SYSTEM", "D.E.N.N.I.S. was opened again - brought this one forward instead of starting a second copy");
   if (compact) return setCompact(false);
   if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 });
@@ -228,6 +251,7 @@ let relaunching = false;
 function relaunch() {
   if (relaunching) return;
   relaunching = true;
+  dlog("SYSTEM", "rebooting");
   app.relaunch({ args: [...process.argv.slice(1).filter((a) => a !== "--relaunched"), "--relaunched"] });
   app.quit();
 }
@@ -309,7 +333,7 @@ ipcMain.on("orb:menu", async (e) => {
 });
 
 singleInstance().then((first) => {
-  if (!first) return app.exit(0); // the running copy has been asked to come forward
+  if (!first) { dlog("SYSTEM", "a second copy started and closed itself - one is already running"); return app.exit(0); } // the running copy has been asked to come forward
   return app.whenReady().then(startCore).then(createWindow);
 }).catch((e) => {
   dialog.showErrorBox("D.E.N.N.I.S. couldn't start", String(e?.stack || e));

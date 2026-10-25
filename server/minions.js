@@ -77,7 +77,7 @@ export class MinionManager {
    * Send a minion off on a task. `minion` names a definition; without one, a general
    * helper is used. Returns the run straight away; the work carries on in the background.
    */
-  deploy({ minion, task, label } = {}) {
+  deploy({ minion, task, label, alwaysAsk = false } = {}) {
     task = String(task || "").trim();
     if (!task) throw new Error("A minion needs a task.");
     if (this.running().length >= MAX_RUNNING) throw new Error(`${MAX_RUNNING} minions are already out. Wait for one to finish, or recall one.`);
@@ -98,6 +98,7 @@ export class MinionManager {
       report: null,
       error: null,
       delivered: false,
+      alwaysAsk: !!alwaysAsk, // sent off for Claude over MCP: its changes are asked even in auto mode
       abort: new AbortController(),
     };
     this.runs.set(run.id, run);
@@ -188,7 +189,7 @@ ${roots}`;
       if (ev.type === "approval") this.broadcast({ ...ev, title: `${run.name}: ${ev.title || "allow this?"}`, minion: run.name, runId: run.id });
       else if (ev.type === "approval_done") this.broadcast({ ...ev, runId: run.id });
     };
-    const toolCtx = agent.toolContext(emit, signal, { generated: conv.generated, who: run.name });
+    const toolCtx = agent.toolContext(emit, signal, { generated: conv.generated, who: run.name, alwaysAsk: run.alwaysAsk });
     const client = agent.client();
     try {
       for (let step = 0; step < MAX_STEPS; step++) {

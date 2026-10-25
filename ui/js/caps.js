@@ -24,6 +24,9 @@ export class Caps {
     // minions
     $("#minion-save").onclick = () => this.defineMinion();
     $("#brief-minions").onchange = (e) => this.h.saveSettings({ briefMinions: e.target.checked });
+    // email (classic Outlook): saved the moment it's switched, then checked
+    $("#mail-on").addEventListener("change", (e) => { e.stopPropagation(); this.setEmail(e.target.checked); });
+    $("#mail-test").onclick = () => this.checkEmail(true);
     // your apps
     $("#app-save").onclick = () => this.saveApp();
     $("#app-cancel").onclick = () => this.editApp(null);
@@ -39,6 +42,14 @@ export class Caps {
     $("#mcp-reconnect").onclick = () => api.mcpDo({ action: "reconnect" }).then(() => this.h.toast("Reconnecting...")).catch((e) => this.h.toast(e.message, true));
     $("#mcp-import").onclick = () => this.importClaude();
     $("#mcp-json").oninput = () => (this.mcpDirty = true);
+    // Claude talking to him (the other way round): saved the moment it's switched
+    $("#claude-on").onchange = (e) => this.claudeDo(e.target.checked ? "enable" : "disable");
+    $("#claude-new-token").onclick = () => this.claudeDo("new-token");
+    $("#claude-show").onclick = () => { this.claudeShown = !this.claudeShown; this.renderClaude(this.claude); };
+    $("#claude-copy-url").onclick = () => this.copy(this.claude?.url || "");
+    $("#claude-copy-token").onclick = () => this.copy(this.claude?.token || "");
+    $("#claude-copy-desktop").onclick = () => this.copy(JSON.stringify(this.claude?.desktop || {}, null, 2));
+    $("#claude-copy-code").onclick = () => this.copy(this.claude?.claudeCode || "");
     // documents
     this.el.querySelectorAll("[name=docSkill], #docs-on").forEach((c) => (c.onchange = () => this.saveDocs()));
     // messaging
@@ -67,7 +78,7 @@ export class Caps {
   async open(tab = "skills") {
     this.el.classList.add("show");
     this.tab(tab);
-    await Promise.all([this.loadSkills(), this.loadMinions(), this.loadApps(), this.loadMcp(), this.loadMessaging()]).catch((e) => this.h.toast(e.message, true));
+    await Promise.all([this.loadSkills(), this.loadMinions(), this.loadApps(), this.loadMcp(), this.loadClaude(), this.loadMessaging(), this.loadEmail()]).catch((e) => this.h.toast(e.message, true));
     const cfg = this.h.getConfig() || {};
     $("#docs-on").checked = cfg.docSkills?.enabled !== false;
     const on = new Set(cfg.docSkills?.skills || ["docx", "pptx", "xlsx", "pdf"]);
@@ -79,6 +90,31 @@ export class Caps {
   tab(name) {
     this.el.querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
     this.el.querySelectorAll("[data-pane]").forEach((p) => (p.hidden = p.dataset.pane !== name));
+  }
+
+  // ---------------------------------------------------------------- email (server/outlook.js)
+  async loadEmail() {
+    const on = !!this.h.getConfig()?.email?.enabled;
+    $("#mail-on").checked = on;
+    if (on) return this.checkEmail(false);
+    this.emailState("", "off - switch it on to let him read your Outlook email");
+  }
+  emailState(dot, text) {
+    $("#mail-dot").className = `dot ${dot}`;
+    $("#mail-status").textContent = text ? ` \u00b7 ${text}` : "";
+  }
+  async checkEmail(test) {
+    this.emailState("warn", "checking Outlook...");
+    const r = await api.emailDo({ action: "test" }).catch((e) => ({ ok: false, error: e.message }));
+    if (!r.ok) { this.emailState("err", r.error); if (test) this.h.toast(r.error, true); return; }
+    const s = r.status;
+    this.emailState(r.enabled ? "ok" : "", `${r.enabled ? "connected" : "reachable, but switched off"}: ${s.total.toLocaleString()} in the inbox, ${s.unread} unread`);
+    if (test) this.h.toast(`Outlook answers: ${s.unread} unread in your inbox`);
+  }
+  async setEmail(on) {
+    await this.h.saveSettings({ email: { enabled: on } });
+    if (on) return this.checkEmail(true);
+    this.emailState("", "off");
   }
 
   // ---------------------------------------------------------------- your apps (server/apps.js)
@@ -298,6 +334,26 @@ export class Caps {
     this.mcpDirty = true;
     this.h.toast(added.length ? `Imported ${added.join(", ")} - check them, then SAVE & CONNECT` : "Nothing new to import");
     if (r.skipped?.length) this.h.toast(`Skipped: ${r.skipped.join("; ")}`, true);
+  }
+
+  // ---------------------------------------------------------------- Claude talking to him (server/mcp-server.js)
+  async loadClaude() { this.renderClaude(await api.mcpServer()); }
+  async claudeDo(action) {
+    const r = await api.mcpServerDo({ action }).catch((e) => ({ ok: false, error: e.message }));
+    if (!r.ok) { this.h.toast(r.error, true); return this.loadClaude().catch(() => {}); }
+    this.renderClaude(r);
+    this.h.toast(action === "enable" ? "Claude can talk to me now - copy the config for the Claude app or Claude Code" : action === "disable" ? "Claude's access is off" : "New token made - the old one no longer works. The Claude app picks it up by itself; Claude Code needs the new command");
+  }
+  renderClaude(s) {
+    if (!s) return;
+    this.claude = s;
+    $("#claude-on").checked = s.enabled;
+    $("#claude-details").hidden = !s.enabled;
+    $("#claude-dot").className = `dot ${s.enabled ? "ok" : ""}`;
+    $("#claude-status").textContent = s.enabled ? "on" : "off";
+    $("#claude-url").textContent = s.url || "";
+    $("#claude-token").textContent = s.token ? (this.claudeShown ? s.token : `${s.token.slice(0, 11)}${"•".repeat(12)}`) : "";
+    $("#claude-show").textContent = this.claudeShown ? "HIDE" : "SHOW";
   }
 
   // ---------------------------------------------------------------- documents

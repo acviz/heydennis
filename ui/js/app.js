@@ -437,7 +437,7 @@ galaxy.winRenderer.domElement.addEventListener("click", (e) => { if (e.target ==
 function remoteMsg(ev) {
   const el = addMsg(ev.dir === "in" ? "user" : ev.update ? "minion" : "bot", ev.text);
   el.classList.add("remote");
-  el.dataset.who = ev.dir === "in" ? `YOU · ${String(ev.label || ev.channel).toUpperCase()}` : `${ev.update ? "UPDATE" : "REPLY"} · ${String(ev.label || ev.channel).toUpperCase()}`;
+  el.dataset.who = ev.who || (ev.dir === "in" ? `YOU · ${String(ev.label || ev.channel).toUpperCase()}` : `${ev.update ? "UPDATE" : "REPLY"} · ${String(ev.label || ev.channel).toUpperCase()}`); // ev.who: Claude over MCP
 }
 // you're at the computer: the server holds updates back from your phone meanwhile
 let presenceAt = 0;
@@ -690,6 +690,7 @@ const TOOL_LABEL = {
   code_execution: () => "working in the sandbox", bash_code_execution: () => "running code in the sandbox", text_editor_code_execution: () => "editing in the sandbox",
   show_diagram: (i) => `drawing ${i.title ? `"${i.title}"` : "a diagram"}`,
   open_app: (i) => `opening ${i.name}`, add_app: (i) => `asking to add ${i.name}`,
+  email: (i) => ({ inbox: i.unread_only ? "checking unread email" : "checking email", read: "reading an email", search: `searching email for "${i.query}"`, draft: "drafting an email", send: "sending an email" })[i.action] || "email",
   browser: (i) => (i.action === "open" ? `opening ${hostOf(i.url)}` : i.action === "read" ? "reading the page" : i.action === "look" ? "looking at the page" : `browser: ${i.action}`),
   deploy_minion: (i) => `deploying ${i.minion || "a helper"}`, create_minion: (i) => `creating the minion ${i.name}`, minion_status: () => "checking on the minions", recall_minion: (i) => `recalling ${i.id}`,
 };
@@ -984,6 +985,7 @@ function reply(text) {
 }
 async function runInstant(cmd, heard) {
   addMsg("user", heard);
+  api.diag({ kind: "instant", heard, action: cmd.action, arg: typeof cmd.arg === "string" ? cmd.arg : undefined }).catch(() => {}); // his daily log
   const now = new Date();
   switch (cmd.action) {
     case "home": home(); break;
@@ -1005,6 +1007,10 @@ async function runInstant(cmd, heard) {
     case "date": return reply(`It's ${now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}.`);
     case "settings": openSettings(); break;
     case "capabilities": caps.open(); break;
+    case "ollamaSetup": {
+      const r = await setupOllama();
+      return reply(r.ok ? (r.already ? `Already on it: ${String(r.text || "").toLowerCase()}.` : "Setting up Ollama - free, on this computer. It takes a few minutes; I'll say when my brain is ready.") : r.error || "That didn't start.");
+    }
     case "rescan": api.reindex().catch(() => {}); break;
     case "continuousOn": return setContinuous(true);
     case "continuousOff": return setContinuous(false);
@@ -1867,15 +1873,48 @@ $("#chip-settings").onclick = () => openSettings();
 let draftRoots = [];
 /** "claude-opus-5-5", or "ollama · <model>" for other brains. */
 function brainLabel(c) {
+  const b = c?.brainNow;
+  if (b) return `${b.auto ? "auto: " : ""}${b.provider === "anthropic" ? b.model || "claude" : `${b.provider} · ${b.model || "not set up yet"}`}`;
   const p = c?.provider || "anthropic";
   return p === "anthropic" ? c?.model || "claude" : `${p} · ${c?.brains?.[p]?.model || "no model set"}`;
 }
 
 // ---- the brain picker (Settings): Claude or any OpenAI-compatible model
+// The Claude models to choose from (prices per million tokens in / out); LIST MODELS adds any others the key can use.
+const CLAUDE_MODELS = [
+  ["claude-opus-5-5", "Opus 5.5 - balanced, the default ($4 / $20)"],
+  ["claude-fable-5-1", "Fable 5.1 - the most capable ($10 / $50)"],
+  ["claude-sonnet-5-5", "Sonnet 5.5 - quick and capable ($2 / $10)"],
+  ["claude-haiku-5-5", "Haiku 5.5 - the fastest and cheapest ($0.10 / $0.50)"],
+  ["claude-opus-5", "Opus 5 - the previous Opus"],
+  ["claude-sonnet-5", "Sonnet 5 - the previous Sonnet"],
+  ["claude-fable-5", "Fable 5 - the previous Fable"],
+];
+let claudeExtra = {}; // id -> name, from LIST MODELS
+function fillClaudeModels(f, current) {
+  const known = new Map(CLAUDE_MODELS);
+  for (const [id, name] of Object.entries(claudeExtra)) if (!known.has(id)) known.set(id, name);
+  if (current && !known.has(current)) known.set(current, current);
+  f.claudeModel.innerHTML = [...known].map(([id, label]) => `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`).join("");
+  f.claudeModel.value = current || "claude-opus-5-5";
+}
+$("#claude-list").onclick = async () => {
+  const f = $("#settings-form");
+  try {
+    const r = await fetch("/api/brains/models", { method: "POST", headers: { "Content-Type": "application/json", "X-Dennis": "1" }, body: JSON.stringify({ provider: "anthropic" }) }).then((x) => x.json());
+    if (!r.ok) return toast(r.error || "Couldn't list the models", true);
+    claudeExtra = {};
+    for (const id of r.models || []) if (!CLAUDE_MODELS.some(([k]) => k === id)) claudeExtra[id] = r.names?.[id] ? `${r.names[id]} (${id})` : id;
+    fillClaudeModels(f, f.claudeModel.value);
+    toast(`${r.models.length} Claude models available to your key`);
+  } catch (e) { toast(e.message, true); }
+};
 const BRAINS = {
+  auto: { placeholder: "" },
   anthropic: { placeholder: "claude-opus-5-5" },
   openai: { url: "https://api.openai.com/v1", key: true, placeholder: "a model name from LIST MODELS" },
   gemini: { url: "https://generativelanguage.googleapis.com/v1beta/openai", key: true, placeholder: "a model name from LIST MODELS" },
+  deepseek: { url: "https://api.deepseek.com", key: true, placeholder: "deepseek-flash (fast) or deepseek-v4-pro" },
   ollama: { url: "http://127.0.0.1:11434/v1", key: false, editUrl: true, placeholder: "a model you've pulled, e.g. from LIST MODELS" },
   custom: { url: "", key: true, editUrl: true, placeholder: "the model name your server expects" },
 };
@@ -1883,7 +1922,7 @@ let brainDraft = null; // { provider, model, brains } while Settings is open
 function brainFieldsOut(f) { // remember what's typed for the provider being shown
   const p = brainDraft.shown;
   if (!p) return;
-  if (p === "anthropic") brainDraft.model = f.model.value.trim();
+  if (p === "auto" || p === "anthropic") { brainDraft.model = f.claudeModel.value || brainDraft.model; return; } // Automatic uses this Claude model too
   else {
     brainDraft.brains[p] = { ...(brainDraft.brains[p] || {}), model: f.model.value.trim() };
     if (BRAINS[p].editUrl) brainDraft.brains[p].baseUrl = f.brainUrl.value.trim();
@@ -1898,16 +1937,114 @@ function showBrain(f, p) {
   f.model.placeholder = b.placeholder;
   f.brainUrl.value = b.editUrl ? brainDraft.brains[p]?.baseUrl || b.url : "";
   f.brainKey.value = brainDraft.keys[p] || "";
-  $("#brain-key-state").textContent = c.brainKeys?.[p] ? "· SAVED" : "";
+  $("#brain-key-state").textContent = c.lockedKeys?.includes(`${p}Key`) ? "· SAVED BUT LOCKED - paste it again" : c.brainKeys?.[p] ? "· SAVED" : "";
   $(".brain-url").hidden = !b.editUrl;
   $(".brain-key").hidden = !b.key;
-  $(".claude-key").hidden = p !== "anthropic";
-  $("#brain-list").hidden = p === "anthropic";
+  const auto = p === "auto", claude = p === "anthropic" || auto;
+  f.model.closest("label").hidden = claude;
+  $(".claude-model").hidden = !claude;
+  if (claude) fillClaudeModels(f, brainDraft.model);
+  $(".claude-key").hidden = !(p === "anthropic" || auto);
+  $("#brain-list").hidden = p === "anthropic" || auto;
+  $(".ollama-box").hidden = !(p === "ollama" || auto);
+  if (p === "ollama" || auto) refreshOllama();
   $("#brain-models").innerHTML = "";
   const note = $("#brain-note");
   note.hidden = p === "anthropic";
-  note.textContent = p === "anthropic" ? "" : `Pick a model that supports tool calling. Web search, document skills, the cloud sandbox and thinking notes need Claude, so they're off with this brain.${p === "ollama" ? " Ollama runs the model on this computer: install it, pull a model, then LIST MODELS." : ""}`;
+  note.textContent = p === "anthropic" ? "" : auto ? "With a Claude API key below, I think with Claude - the sharpest answers. Without one, I use Ollama: free, private, on this computer (simpler answers, and no web search or document skills)." : `Pick a model that supports tool calling. Web search, document skills, the cloud sandbox and thinking notes need Claude, so they're off with this brain.${p === "ollama" ? " Ollama runs the model on this computer: install it, pull a model, then LIST MODELS." : ""}`;
 }
+// ---- the free brain: Ollama's state, and setting it up (install, start, a model that fits)
+async function refreshOllama() {
+  try { renderOllama(await api.ollama()); } catch { /* the box stays as it was */ }
+}
+function renderOllama(st) {
+  const box = $(".ollama-box");
+  if (!box || !st) return;
+  const busy = st.busy, rec = st.recommended || {}, btn = $("#ollama-setup"), bar = box.querySelector(".ob-bar");
+  bar.hidden = !busy || busy.pct == null;
+  if (busy?.pct != null) bar.firstElementChild.style.width = `${busy.pct}%`;
+  $("#ollama-cancel").hidden = !busy;
+  const ready = st.running && st.hasModel;
+  btn.hidden = !!busy || ready;
+  $("#ollama-dot").className = `dot ${busy ? "warn" : ready ? "ok" : st.installed ? "warn" : "err"}`;
+  if (busy) {
+    $("#ollama-state").textContent = `${busy.text}${busy.pct != null ? ` - ${busy.pct}%` : ""}`;
+    $("#ollama-note").textContent = "You can close Settings; I'll say when my brain is ready.";
+    return;
+  }
+  if (ready) {
+    $("#ollama-state").textContent = `Ollama ${st.version} is ready - thinking with ${st.model}`;
+    $("#ollama-note").textContent = `${st.models.length} model${st.models.length === 1 ? "" : "s"} on this computer.`;
+    return;
+  }
+  btn.textContent = !st.installed ? "SET UP OLLAMA" : !st.running ? "START & SET UP" : `DOWNLOAD ${String(rec.model || "A MODEL").toUpperCase()}`;
+  $("#ollama-state").textContent = !st.installed ? "Ollama isn't installed" : !st.running ? "Ollama is installed but not running" : `Ollama ${st.version} is running - no model for me yet`;
+  $("#ollama-note").textContent = (!st.installed && !st.canInstall
+    ? "On Linux, install it with: curl -fsSL https://ollama.com/install.sh | sh - then press the button."
+    : `${!st.installed ? "Installs Ollama (free, from ollama.com) and downloads" : "Downloads"} ${rec.model} (about ${rec.size}), picked for ${rec.basis}.`) + (st.last && !st.last.ok ? ` Last try: ${st.last.text}` : "");
+}
+async function setupOllama() {
+  const r = await api.ollamaDo({ action: "setup" }).catch((e) => ({ ok: false, error: e.message }));
+  if (!r.ok) toast(r.error || "Couldn't start the setup", true);
+  refreshOllama();
+  return r;
+}
+$("#ollama-setup").onclick = () => setupOllama();
+$("#ollama-cancel").onclick = () => api.ollamaDo({ action: "cancel" }).then(refreshOllama).catch(() => {});
+// ---- his own voice: Chatterbox (setup, status, the voice sample it clones)
+async function refreshCb() { try { renderCb(await api.voiceStatus()); } catch { /* the box stays as it was */ } }
+function renderCb(st) {
+  const box = $(".cb-box");
+  if (!box || !st) return;
+  const busy = st.busy, bar = box.querySelector(".ob-bar");
+  bar.hidden = !busy || busy.pct == null;
+  $("#cb-cancel").hidden = !busy;
+  $("#cb-setup").hidden = !!busy || st.installed;
+  $("#cb-dot").className = `dot ${busy ? "warn" : st.running ? "ok" : st.installed ? "warn" : "err"}`;
+  $("#cb-state").textContent = busy ? busy.text : st.running ? `Ready on ${st.gpu || st.device || "this computer"}${st.loaded?.length ? ` - ${st.loaded.join(" and ")} loaded` : " - loading"}` : st.installed ? "Set up - it starts when I next speak" : "Not set up yet";
+  $("#cb-note").textContent = busy ? "You can close Settings; I'll say when it's ready." : st.installed
+    ? "English uses the fast Turbo model; Arabic, French, Japanese and Chinese the multilingual one. It needs about 6 GB of graphics memory while it's the voice in use."
+    : "Installs a private Python with Chatterbox (Resemble AI, open source, MIT) and downloads its models: about 7 GB, once." + (st.last && !st.last.ok ? ` Last try: ${st.last.text}` : "");
+  const own = st.sample && !/dennis-voice\.wav$/i.test(st.sample);
+  $("#cb-sample").textContent = own ? `Voice: your sample (${st.sample.split(/[\\/]/).pop()})` : "Voice: Daniel - cloned from a sample of the Natural British voice";
+  $("#cb-daniel").hidden = !own;
+}
+$("#cb-setup").onclick = async () => { const r = await api.voiceDo({ action: "setup" }).catch((e) => ({ ok: false, error: e.message })); if (!r.ok) toast(r.error || "Couldn't start the setup", true); refreshCb(); };
+$("#cb-cancel").onclick = () => api.voiceDo({ action: "cancel" }).then(refreshCb).catch(() => {});
+$("#cb-pick").onclick = async () => {
+  const r = await api.voiceDo({ action: "pick-sample" }).catch((e) => ({ ok: false, error: e.message }));
+  if (r.ok) toast("I'll speak in the voice from that sample. Use a voice you have permission to use.");
+  else if (!r.cancelled) toast(r.error || "That sample didn't work", true);
+  refreshCb();
+};
+$("#cb-daniel").onclick = () => api.voiceDo({ action: "default-sample" }).then(refreshCb).catch(() => {});
+$("#settings-form").engine.addEventListener("change", (e) => { $(".cb-box").hidden = e.target.value !== "chatterbox"; if (e.target.value === "chatterbox") refreshCb(); });
+let cbLine = null;
+function cbEvent(ev) {
+  if ($("#settings").classList.contains("show")) refreshCb();
+  if (!cbLine) cbLine = addMsg("prog", "");
+  cbLine.textContent = `VOICE SETUP · ${ev.text}`;
+  if (!ev.final) return;
+  cbLine = null;
+  toast(ev.text, ev.phase !== "done");
+  if (ev.phase === "done" && voice.cfg.engine === "chatterbox") { voice.cbFailed = 0; const t = "This is my own voice now. Rather nice, isn't it?"; addMsg("bot", t); voice.say(t); }
+}
+
+let ollamaLine = null;
+function ollamaEvent(ev) {
+  if ($("#settings").classList.contains("show")) refreshOllama();
+  if (!ollamaLine) ollamaLine = addMsg("prog", "");
+  ollamaLine.textContent = `BRAIN SETUP · ${ev.text}${ev.pct != null && !ev.final ? ` ${ev.pct}%` : ""}`;
+  if (!ev.final) return;
+  ollamaLine = null;
+  toast(ev.text, ev.phase !== "done");
+  if (ev.phase === "done") {
+    const t = "My brain is ready. Free, and right here on this computer.";
+    addMsg("bot", t); voice.say(t); caption(t);
+  }
+  api.state().then((st) => { if (st?.config) S.config = st.config; }).catch(() => {});
+}
+
 $("#settings-form").provider.addEventListener("change", (e) => { const f = $("#settings-form"); brainFieldsOut(f); showBrain(f, e.target.value); });
 $("#brain-list").onclick = async () => {
   const f = $("#settings-form");
@@ -1926,32 +2063,40 @@ function openSettings(first = false) {
   const f = $("#settings-form");
   brainDraft = { model: c.model || "claude-opus-5-5", brains: JSON.parse(JSON.stringify(c.brains || {})), keys: {}, shown: null };
   showBrain(f, c.provider || "anthropic");
+  S.firstRun = first;
   $("#settings-title").textContent = first ? "SYSTEMS ONLINE" : "SETTINGS";
   $("#settings-intro").textContent = first
-    ? "Good to meet you. I'm D.E.N.N.I.S. - Digital Entity Neural Network Intelligent System, your virtual production assistant. Tell me who you are, hand me a Claude API key so I can think, and choose which folders I may look after. The rest, I'll handle."
+    ? "Good to meet you. I'm D.E.N.N.I.S. - Digital Entity Neural Network Intelligent System, your virtual production assistant. Tell me who you are and choose which folders I may look after. For my brain, hand me a Claude API key for the sharpest answers - or leave it blank, and I'll install Ollama and think for free, right here on this computer. The rest, I'll handle."
     : "";
   f.userName.value = c.userName || "";
   f.address.value = c.address || "";
   f.personality.value = c.personality || "";
   f.apiKey.value = "";
-  $("#key-state").textContent = c.hasApiKey ? "· SAVED" : "";
+  $("#key-state").textContent = c.lockedKeys?.includes("apiKey") ? "· SAVED BUT LOCKED - paste it again" : c.hasApiKey ? "· SAVED" : "";
+  $("#key-state").classList.toggle("warn", !!c.lockedKeys?.includes("apiKey"));
   $("#key-storage").textContent = c.keyStorage === "os" ? ", encrypted by your OS keychain" : c.keyStorage === "env" ? " (currently read from ANTHROPIC_API_KEY)" : "";
   f.effort.value = c.effort || "low";
   f.permissionMode.value = c.permissionMode || "ask";
   f.webSearch.checked = !!c.webSearch;
   f.speak.checked = !!c.voice?.speak;
   f.engine.value = c.voice?.engine || "kokoro";
+  $(".cb-box").hidden = f.engine.value !== "chatterbox";
+  if (f.engine.value === "chatterbox") refreshCb();
   f.kokoroVoice.value = c.voice?.kokoroVoice || "bm_daniel";
   f.elevenVoice.value = c.voice?.elevenVoice || "";
   f.elevenKey.value = "";
   // ElevenLabs chosen but no key: say plainly what that means (only English is spoken aloud)
   const noKey = !c.hasElevenKey && (c.voice?.engine || "kokoro") === "elevenlabs";
-  $("#eleven-state").textContent = c.hasElevenKey ? "· SAVED" : noKey ? "· NOT SET - only English is spoken aloud until you add it" : "";
+  $("#eleven-state").textContent = c.lockedKeys?.includes("elevenKey") ? "· SAVED BUT LOCKED - paste it again" : c.hasElevenKey ? "· SAVED" : noKey ? "· NOT SET - only English is spoken aloud until you add it" : "";
   $("#eleven-state").classList.toggle("warn", noKey);
   f.sttModel.value = c.voice?.sttModel || "Xenova/whisper-base.en";
   f.language.value = c.voice?.language || "en";
   f.city.value = c.location?.query || c.location?.name || "";
   f.briefOnBoot.checked = !!c.briefOnBoot;
+  f.logsOn.checked = c.logs?.enabled !== false;
+  const keep = String(c.logs?.keepDays ?? 90);
+  if (![...f.logsKeep.options].some((o) => o.value === keep)) f.logsKeep.add(new Option(`${keep} days`, keep));
+  f.logsKeep.value = keep;
   f.continuous.checked = S.continuous;
   f.theme.value = themeName(c.visuals?.theme);
   f.theme.onchange = () => setTheme(f.theme.value, { save: false });
@@ -2011,6 +2156,7 @@ $("#root-add").onclick = () => addRoot($("#root-path").value);
 $("#root-path").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addRoot(e.target.value); } });
 $("#root-browse").onclick = async () => { const { path } = await api.pickFolder(); if (path) addRoot(path); };
 $("#settings-cancel").onclick = () => { $("#settings").classList.remove("show"); revertThemePreview(); };
+$("#open-logs").onclick = () => api.logsDo({ action: "reveal" }).catch((e) => toast(e.message, true));
 $("#open-memory").onclick = () => api.reveal((S.config.dataDir || "") + (S.config.dataDir?.includes("\\") ? "\\" : "/") + "memory.md").catch(() => toast("No memories saved yet"));
 $("#settings-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -2019,6 +2165,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
   const patch = {
     userName: f.userName.value.trim(), address: f.address.value.trim(), personality: f.personality.value.trim(), model: brainDraft.model || "claude-opus-5-5",
     provider: f.provider.value, brains: brainDraft.brains, city: f.city.value.trim(), briefOnBoot: f.briefOnBoot.checked,
+    logs: { enabled: f.logsOn.checked, keepDays: Number(f.logsKeep.value) },
     watch: { enabled: f.watchOn.checked, quiet: { from: f.quietFrom.value || "22:00", to: f.quietTo.value || "07:00" } },
     effort: f.effort.value, permissionMode: f.permissionMode.value, webSearch: f.webSearch.checked, showHidden: f.showHidden.checked,
     roots: draftRoots,
@@ -2028,7 +2175,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
     hands: { enabled: f.handsEnabled.checked, palmToTalk: f.palmToTalk.checked, cameraId: f.cameraId.value, mirror: f.mirrorCam.checked, stageFlip: f.stageFlip.checked, feel: f.gestureFeel.value },
   };
   if (f.apiKey.value.trim()) patch.apiKey = f.apiKey.value.trim();
-  for (const [p, key] of Object.entries(brainDraft.keys)) patch[`${p}Key`] = key; // openaiKey, geminiKey, customKey
+  for (const [p, key] of Object.entries(brainDraft.keys)) patch[`${p}Key`] = key; // openaiKey, geminiKey, deepseekKey, customKey
   if (f.elevenKey.value.trim()) patch.elevenKey = f.elevenKey.value.trim();
   try {
     const rootsChanged = JSON.stringify(patch.roots) !== JSON.stringify(S.config.roots);
@@ -2039,6 +2186,16 @@ $("#settings-form").addEventListener("submit", async (e) => {
     applyConfig(config);
     $("#settings").classList.remove("show");
     toast("Saved. New settings apply from the next message.");
+    // no paid key on a first start: the free brain, set up straight away (the screen said so)
+    const firstRun = S.firstRun;
+    S.firstRun = false;
+    if (firstRun && config.brainNow?.provider === "ollama") {
+      const st = await api.ollama().catch(() => null);
+      if (st && !st.busy && !(st.running && st.hasModel) && (st.installed || st.canInstall)) {
+        const r = await setupOllama();
+        if (r.ok) { const t = "No paid key, so I'll think with Ollama - free, right here on this computer. Setting it up now; it takes a few minutes, and I'll say when I'm ready."; addMsg("bot", t); voice.say(t); caption(t, 7000); }
+      }
+    }
     if (rootsChanged) { S.indexRefreshed = false; home(); }
     const camChanged = patch.hands.cameraId !== (prevHands.cameraId || "");
     if (patch.hands.enabled && (!tracker.running || camChanged)) restartHands();
@@ -2053,7 +2210,7 @@ function applyConfig(c) {
   S.config = c;
   voice.configure({ speak: c.voice?.speak !== false, voiceName: c.voice?.voiceName || "", rate: c.voice?.rate || 0.96, pitch: c.voice?.pitch ?? 0.85, sttModel: c.voice?.sttModel || "Xenova/whisper-base.en", micId: c.voice?.micId || "",
     engine: c.voice?.engine || "kokoro", kokoroVoice: c.voice?.kokoroVoice || "bm_daniel", elevenOk: !!c.hasElevenKey,
-    language: c.voice?.language || "en", languages: c.voice?.languages || ["en", "ar", "tl", "fr", "ja", "zh"] });
+    language: c.voice?.language || "en", languages: (c.voice?.languages || ["en", "ar", "fr", "ja", "zh"]).filter((l) => l !== "tl") });
   voice.elevenFailed = false;
   gestures.palmEnabled = c.hands?.palmToTalk !== false;
   gestures.mirror = c.hands?.mirror !== false;
@@ -2340,6 +2497,8 @@ function bootSequence(st) {
     else if (ev.type === "approval" && (ev.runId || ev.remote)) showApproval(ev); // a minion asking, or a request from your phone
     else if (ev.type === "approval_done" && ev.remote) closeApproval(ev.id);
     else if (ev.type === "remote") remoteMsg(ev);
+    else if (ev.type === "ollama") ollamaEvent(ev);
+    else if (ev.type === "chatterbox") cbEvent(ev);
     else if (ev.type === "ui" && ev.remote) handleUi(ev); // something he did from a phone conversation
     else if (ev.type === "reminder") reminderDue(ev.reminder, ev.missed);
     else if (ev.type === "watch") watchNotice(ev.notice);
@@ -2385,7 +2544,7 @@ function bootSequence(st) {
   addMsg("sys", st.mock ? "mock brain - no Claude calls" : `brain: ${brainLabel(st.config)}`);
   if (PROBE) { runProbe(); return; }
   await booted;
-  if (!name || (!st.config.hasApiKey && !st.mock)) openSettings(true);
+  if (!name || (!st.config.hasApiKey && st.config.brainNow?.provider === "anthropic" && !st.mock)) openSettings(true);
   else {
     caption(greet, 9000); voice.feed(greet + " "); voice.flush(); S.lastReply = greet;
     // the daily briefing, at the first start of the day (if asked for in Settings)

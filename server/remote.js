@@ -175,15 +175,23 @@ export class RemoteHub {
       }
       if (this.runs.size > 200) this.runs.delete(this.runs.keys().next().value);
     } else if (ev.type === "approval" && ev.runId && !ev.remote) {
-      const f = this.forward;
-      if (!f.approvals || (f.awayOnly && !this.isAway())) return;
-      const [c] = this.targets();
-      if (!c || (c.id === "teams" && !c.chatReady)) return; // a one-way Workflow can't take an answer
-      this.approvals.set(ev.id, { channel: c, to: null });
-      c.askYesNo(null, `${ev.minion || "A minion"} asks: ${ev.title || "allow this?"}${ev.detail ? `\n${clip(ev.detail, 700)}` : ""}`, ev.id).catch(() => {});
+      this.forwardApproval(ev, `${ev.minion || "A minion"} asks: `);
     } else if (ev.type === "approval_done" && !ev.remote) {
       this.approvals.delete(ev.id);
     }
+  }
+  /**
+   * An approval asked outside a phone conversation (a minion's, or one from Claude over MCP): put it to
+   * you on the phone too, if that's switched on and you're away. Your YES / NO (or Allow) answers it.
+   */
+  forwardApproval(ev, prefix) {
+    const f = this.forward;
+    if (!f.approvals || (f.awayOnly && !this.isAway())) return false;
+    const [c] = this.targets();
+    if (!c || (c.id === "teams" && !c.chatReady)) return false; // a one-way Workflow can't take an answer
+    this.approvals.set(ev.id, { channel: c, to: null });
+    c.askYesNo(null, `${prefix}${ev.title || "allow this?"}${ev.detail ? `\n${clip(ev.detail, 700)}` : ""}`, ev.id).catch(() => {});
+    return true;
   }
   /** A folder-watcher notice in a sentence. */
   static watchText(n) {

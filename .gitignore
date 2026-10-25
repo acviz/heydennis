@@ -5,3 +5,4 @@ build/icon.png
 .DS_Store
 *.log
 voice-samples/
+__pycache__/

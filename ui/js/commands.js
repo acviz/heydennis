@@ -36,6 +36,7 @@ export function matchCommand(text, { places = [], apps = [] } = {}) {
   if (is(t, "(open |show )?(the )?settings")) return { action: "settings", ack: "" };
   if (is(t, "(open |show )?(the )?capabilities", "(show )?(my )?(skills|minions)")) return { action: "capabilities", ack: "" };
   if (is(t, "(rescan|re-?index|refresh)( (the )?(files|index))?")) return { action: "rescan", ack: "Rescanning." };
+  if (is(t, "(set ?up|install|download|get|start)( the)? (ollama|free brain|local brain|offline brain)", "use (the )?(free|local) brain")) return { action: "ollamaSetup", ack: "" };
   if (is(t, "(start )?(taking )?(meeting )?notes", "take (meeting )?notes", "meeting mode", "record (the |this )?meeting", "start (the )?notes")) return { action: "notesStart", ack: "" };
   if (is(t, "stop (taking )?(the )?notes", "end (the )?notes", "stop recording( the meeting)?")) return { action: "notesStop", ack: "" };
   if (is(t, "do not disturb", "don't disturb me", "quiet mode", "(no|stop the|mute) notices", "notices off")) return { action: "dndOn", ack: "Understood. I'll keep my notices to myself." };

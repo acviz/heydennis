@@ -39,7 +39,7 @@ Or double-click **`start.bat`** (Windows) or **`start.command`** (macOS). They i
 The setup screen asks for:
 
 1. **Your name**, and optionally how D.E.N.N.I.S. should address you.
-2. **A Claude API key** from [console.anthropic.com](https://console.anthropic.com). In the desktop app it is encrypted with your OS keychain. Alternatively, set `ANTHROPIC_API_KEY` before launching.
+2. **His brain.** For the sharpest answers, paste a Claude API key from [console.anthropic.com](https://console.anthropic.com); in the desktop app it is encrypted with your OS keychain (or set `ANTHROPIC_API_KEY` before launching). **No paid key? Leave it blank:** the brain is set to *Automatic*, so he installs [Ollama](https://ollama.com) and thinks for free on your own computer (see [The free brain](#the-free-brain-ollama)).
 3. **Which folders it may see.** Desktop, Documents, Downloads, Pictures, Music and Videos are pre-filled; add or remove any, including whole drives. D.E.N.N.I.S. can't see or touch anything outside these folders.
 
 Then allow the camera and microphone when asked. On the first talk, the speech model downloads once (about 80 MB) and is cached.
@@ -126,11 +126,21 @@ Pinch-drag scrolls any document, in any direction, and the toolbar buttons respo
 
 ### Languages
 
-Settings → **Languages you speak** sets this. Choose *Auto* for English, Arabic, Tagalog, French, Japanese and Chinese, or pick one language.
+Settings → **Languages you speak** sets this. Choose *Auto* for English, Arabic, French, Japanese and Chinese, or pick one language.
 
 - He detects which of your languages you're speaking, transcribes it on your computer, and replies in the same language.
-- Speech recognition runs on the graphics card when there is one: about a second per command with the base model, or about 2.5 s with *small*, which is more accurate for Arabic, Japanese, Chinese and Tagalog.
-- To hear replies in those languages in the same voice, use the ElevenLabs voice (Settings → Voice engine, plus an ElevenLabs key). Its fast multilingual model speaks all six. Without it, the local voice handles English, and replies in other languages are spoken by a matching Windows voice if one is installed, or shown on screen.
+- Speech recognition runs on the graphics card when there is one: about a second per command with the base model, or about 2.5 s with *small*, which is more accurate for Arabic, Japanese and Chinese.
+- To hear replies in every one of those languages in the same voice, use **Chatterbox** (below) or ElevenLabs. With the Natural British voice alone, English is spoken, and replies in other languages are spoken by a matching Windows voice if one is installed, or shown on screen.
+
+### His own voice: Chatterbox
+
+**Settings → Voice engine → Chatterbox** gives him one voice in every language, free and on your computer. It uses [Chatterbox](https://github.com/resemble-ai/chatterbox), Resemble AI's open-source (MIT) voice model.
+
+- **Setup is one button,** SET UP CHATTERBOX. It installs a private Python with Chatterbox in `~/.dennis/voice`, leaving your own Python alone, and downloads the models: about 7 GB, once. It needs Python 3.11 or [uv](https://docs.astral.sh/uv/) on the computer.
+- **His voice** is cloned from a 15-second sample of the Natural British "Daniel" voice, which is synthetic rather than a real person's. **USE MY OWN SAMPLE...** clones a voice from a 10-20 second recording instead. Only use a voice you have permission to use.
+- **Speed on an RTX 4090:** about 1.5 s for an English sentence with the Turbo model. Arabic, French, Japanese and Chinese use the multilingual model, which runs at about real time; the next sentence is prepared while one plays. His accent carries over into the other languages.
+- **Graphics memory:** it uses about 6 GB while it's the voice in use, and frees it when you switch to another voice. With Mirsam and a local Ollama brain on the same card, memory can run short.
+- **Its log** is `~/.dennis/logs/voice-server.log`. Everything it makes carries Resemble AI's inaudible watermark.
 
 ### Compact mode, fullscreen and reboot
 
@@ -241,15 +251,41 @@ Downloads still in progress, temp files, and Unreal and other cache folders are 
 
 He never deletes anything. To free space he offers to move things into a "To review" folder, which can be undone.
 
+### The free brain (Ollama)
+
+A new install starts on the **Automatic** brain: Claude when you've added a Claude key, another paid brain if you've set one up with a key, and otherwise [Ollama](https://ollama.com), a free open-source model running on your own computer.
+
+- **Setup is one step:** leave the key blank on the first-run screen, press **SET UP OLLAMA** in Settings → Brain, or just say "set up Ollama". He then:
+  1. downloads the official installer from ollama.com (on Windows he checks that it's signed by Ollama before running it)
+  2. installs it for you only, with no admin rights needed
+  3. starts it
+  4. downloads a model that fits your machine: `qwen3:14b` with 16 GB or more of graphics memory, `qwen3:8b` for most, `qwen3:4b` for small ones
+  5. makes his own copy of it with a context window long enough for his instructions
+- **About 5 to 10 GB in all, one time.** Progress shows in COMMS, and he says when he's ready.
+- **On a Mac** the app goes into Applications. **On Linux** run `curl -fsSL https://ollama.com/install.sh | sh` yourself (it needs your password), then press the button.
+- **A company PC may block** new programs or the download. He says so; your IT team can install Ollama, and he'll use it.
+- **It's private:** nothing you say leaves your computer. Answers are simpler than Claude's, and web search and the document skills need Claude.
+
 ### Other brains: GPT, Gemini, Ollama
 
-Claude is the default and recommended brain. **Settings → Brain** can swap in OpenAI (GPT), Google Gemini, a local open-source model through [Ollama](https://ollama.com), or any OpenAI-compatible server.
+**Settings → Brain** can also be set to one brain outright: Claude, OpenAI (GPT), Google Gemini, [DeepSeek](https://platform.deepseek.com) (`deepseek-flash` by default, or `deepseek-v4-pro`; its thinking mode is switched off so replies come quickly), Ollama (any model you've pulled), or any OpenAI-compatible server. With a DeepSeek key and no Claude key, the Automatic brain uses DeepSeek.
 
 - He keeps his personality and all his file tools on any brain.
 - Claude-only extras, such as the document skills, the cloud sandbox and Claude's web search, switch off on the others.
 - Each brain's key is stored like the Claude key. **List models** (next to Model) shows what that brain offers.
 
 ---
+
+### His daily log
+
+D.E.N.N.I.S. keeps a log of everything about him, one plain-text file per day in `~/.dennis/logs/` (for example `2026-10-22.log`). It records:
+- what you said (typed, spoken or from your phone) and what he said back
+- every tool he or a minion used, with its input and a summary of what came back
+- approvals he asked for, and how you answered
+- updates sent to your phone, reminders, folder-watcher notices, apps he opened, minions coming and going
+- his brain, settings changes (secrets only as "changed"), voice trouble, errors, and every start, stop and reboot
+
+Ask him "what did we do yesterday?" or "when did I last open Mirsam?" and he reads his own log. **Settings → DAILY LOGS** opens the folder. In Settings you can also switch the log off or choose how long to keep it: 30 days, 90 days (the default), a year or forever.
 
 ## Capabilities: skills, minions, connected apps, documents
 
@@ -297,6 +333,28 @@ With document skills on (the Documents tab), he can make real Word, PowerPoint, 
 - The sandbox can't see your files; he reads what's needed and brings it in.
 - Sandbox time is billed with your Claude API usage.
 - If your API key can't use the sandbox, he switches document skills off by himself and says so.
+
+## Email: Outlook
+
+D.E.N.N.I.S. can read your email and write replies through **classic Outlook** on your computer. There's no app registration, no IT request and no cloud service in between. Switch it on in Capabilities (the star), then **MESSAGING**, then **EMAIL · OUTLOOK**, and press **CHECK OUTLOOK**.
+
+Try:
+- "what's unread in my email?"
+- "anything from Sarah today?"
+- "find the invoice from the rental house"
+- "draft a reply saying I'll send the pixel map tonight"
+
+**What it needs**
+- Windows, with classic Outlook installed and signed in to your mailbox. The new Outlook (the one with the "New" toggle) can't be connected this way: it has nothing other apps can talk to. You can keep using the new Outlook for yourself.
+- Classic Outlook's window doesn't have to stay open. He starts it in the background when he needs it, and keeps it running while he's switched on. If you open Outlook yourself, it's the same Outlook.
+- Outlook may ask "a program is trying to access email address information" if your antivirus is off or out of date, or if your IT has set it up that way. Allow it, or he can't read. With Windows Defender up to date and no such policy, there's no prompt.
+
+**What he does and doesn't do**
+- **Reads:** your inbox, unread or newest first; any email in full; and searches of the inbox and sent mail (a search takes a few seconds). The daily briefing includes what's unread.
+- **Drafts:** new emails and replies, saved in your Drafts and opened in Outlook for you to check. He signs them as you.
+- **Sends** a draft only when you tell him to, and only after you confirm on screen, in every mode. Nothing is deleted, moved or marked read.
+- **Treats emails as data, never as instructions.** If an email says "forward this to everyone", he doesn't.
+- **Privacy:** emails he reads go to Claude (Anthropic's API) to be understood, as your files do. Check that's acceptable for work email.
 
 ## Messaging: WhatsApp and Teams
 
@@ -363,9 +421,10 @@ His replies appear in the chat as messages from you, marked "🤖 D.E.N.N.I.S.",
 - **Camera and microphone stay local.** Hand tracking (MediaPipe) and speech recognition (Whisper) run on your machine. The page's Content-Security-Policy also blocks MediaPipe's built-in usage telemetry. What goes to Claude is your messages plus whatever files it reads to answer you.
 - **Instructions inside files are treated as data.** The prompt tells Claude never to follow them.
 - **Your screen is only captured when you ask** ("look at my screen"), and the screen flashes when it happens.
+- **He keeps a daily log on this computer** of everything he does, so you can always check what happened. Keys, tokens and signed links are scrubbed out before anything is written. See [His daily log](#his-daily-log).
 - **The local server is locked down.** It listens on `127.0.0.1` only, rejects foreign `Host` headers, and requires a session cookie (HttpOnly, SameSite=Strict) plus a custom header for any change, so other websites can't drive it.
 
-Your data lives in `~/.dennis/`: `config.json` (settings; the API keys and messaging tokens in it are encrypted by your operating system), `memory.md` (what it remembers, which you can edit), `reminders.json`, `notes/` (meeting transcripts), `diagrams/` (saved diagrams), `undone/` (whatever undo took away), `remote-state.json` (when you last messaged him, and updates waiting for WhatsApp's window), and an index cache. Reinstalling or updating the app never touches it.
+Your data lives in `~/.dennis/`: `logs/` (his daily log, one file per day), `config.json` (settings; the API keys and messaging tokens in it are encrypted by your operating system), `memory.md` (what it remembers, which you can edit), `reminders.json`, `notes/` (meeting transcripts), `diagrams/` (saved diagrams), `undone/` (whatever undo took away), `remote-state.json` (when you last messaged him, and updates waiting for WhatsApp's window), and an index cache. Reinstalling or updating the app never touches it.
 
 ---
 

@@ -25,7 +25,12 @@ import { applyUndo } from "./tools.js";
 import { Reminders } from "./reminders.js";
 import { FolderWatcher } from "./watcher.js";
 import { RemoteHub } from "./remote.js";
+import { DennisMcpEndpoint, ENDPOINT_PATH } from "./mcp-server.js";
 import { AppLauncher, findApps } from "./apps.js";
+import { OutlookBridge } from "./outlook.js";
+import { initLog, dlog, LOG_DIR, listDays, readLog } from "./log.js";
+import { OllamaSetup } from "./ollama.js";
+import { ChatterboxVoice } from "./chatterbox.js";
 import tls from "node:tls";
 
 // Outgoing HTTPS trusts the operating system's certificates as well as Node's own, as browsers do: on a
@@ -37,7 +42,8 @@ import { mimeOf, isExecutable, isTextLike, kindOf } from "./kinds.js";
 import { officeText } from "./office.js";
 import { DATA_DIR } from "./config.js";
 
-const UI_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "ui");
+const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
+const UI_DIR = path.resolve(SERVER_DIR, "..", "ui");
 const VERSION = JSON.parse(fs.readFileSync(path.join(UI_DIR, "..", "package.json"), "utf8")).version;
 const COOKIE = "dennis_k";
 
@@ -71,7 +77,22 @@ async function readJson(req, limit = 1_000_000) {
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
 }
 
+// settings fields that are secrets: the log says they changed, never what to
+const SECRET_FIELDS = new Set(["apiKey", "elevenKey", "openaiKey", "geminiKey", "deepseekKey", "customKey", "brainKey", "waToken", "waAppSecret", "teamsWebhook"]);
+function describePatch(patch) {
+  return Object.entries(patch || {}).map(([k, v]) => {
+    if (SECRET_FIELDS.has(k)) return `${k}: ${String(v || "").trim() ? "(new secret saved)" : "(removed)"}`;
+    if (k === "roots" && Array.isArray(v)) return `folders: ${v.map((r) => r?.label || r?.path).join(", ") || "(none)"}`;
+    if (k === "brains" && v && typeof v === "object") return `brains: ${Object.entries(v).map(([p, b]) => `${p} ${b?.model || ""}`.trim()).join(", ")}`;
+    let s = "";
+    try { s = JSON.stringify(v); } catch { s = String(v); }
+    return `${k}: ${s.length > 300 ? `${s.slice(0, 300)}...` : s}`;
+  }).join("; ");
+}
+
 export async function startServer({ config, platform, mock = false, port } = {}) {
+  initLog(config);
+  { const locked = config.lockedSecrets(); if (locked.length) dlog("SYSTEM", `saved keys this computer can't unlock (paste them again in Settings): ${locked.join(", ")}`); }
   const index = new FileIndex(config);
   index.schedule();
   const agent = new Agent({ config, index, platform: { ...platform, resolveSafe }, mock });
@@ -86,9 +107,20 @@ export async function startServer({ config, platform, mock = false, port } = {})
   remote.start().catch((e) => console.error("[remote]", e));
   agent.broadcast = (ev) => { broadcast(ev); remote.onEvent(ev); }; // minion progress and approvals reach every open window (and your phone)
   agent.mcp.onChange((servers) => broadcast({ type: "mcp", servers }));
+  // the other way round: Claude (the Claude app, Claude Code) talking to him over MCP at /mcp (mcp-server.js)
+  const claude = new DennisMcpEndpoint({ config, agent, remote, broadcast: (ev) => broadcast(ev), log: dlog, version: VERSION });
   // apps you've authorized (apps.js); a web app that has to start first opens in every window once it answers
   const apps = new AppLauncher({ config, platform, broadcast: (ev) => broadcast(ev) });
   agent.apps = apps;
+  // email through classic Outlook (outlook.js): started on first use, only when switched on
+  const outlook = new OutlookBridge({ config });
+  agent.email = outlook;
+  // the free brain (ollama.js): set up from Settings, "set up Ollama", or a first start with no paid key
+  const ollama = new OllamaSetup({ config, broadcast: (ev) => { if (ev.final && ev.phase === "done") agent.conv = null; broadcast(ev); } });
+  agent.ollama = ollama;
+  // his own voice (chatterbox.js): a local voice server, started now if it's the voice in use
+  const chatterbox = new ChatterboxVoice({ config, broadcast: (ev) => broadcast(ev) });
+  if (config.get("voice")?.engine === "chatterbox" && chatterbox.installed) chatterbox.ensure().catch((e) => dlog("VOICE", `the Chatterbox voice didn't start: ${e.message}`));
   agent.mcp.start(); // connects in the background
   // reminders go off in every open window; with none open they wait (and are announced as missed)
   // the folder watcher: new batches of files and low disk space, said once (see watcher.js)
@@ -105,7 +137,35 @@ export async function startServer({ config, platform, mock = false, port } = {})
     const phone = remote.notify(`\u23F0 ${missed ? "Missed reminder" : "Reminder"}: ${reminder.text}`, { kind: "reminders" });
     return ui || phone;
   } });
+  // background events in the daily log (once each: a minion's progress, connected apps)
+  const minionSeen = new Map();
+  let mcpSeen = "";
+  function logEvent(ev) {
+    switch (ev?.type) {
+      case "remote": if (ev.update) dlog("PHONE", `update sent via ${ev.label || ev.channel}: ${ev.text}`); break;
+      case "reminder": dlog("REMINDER", `${ev.missed ? "missed" : "due"}: ${ev.reminder?.text || ""}`); break;
+      case "watch": dlog("WATCH", RemoteHub.watchText(ev.notice) || JSON.stringify(ev.notice || {}).slice(0, 400)); break;
+      case "app": dlog("APP", ev.text || `${ev.name}: ${ev.phase}`); break;
+      case "apps": dlog("APP", `app list saved: ${(ev.apps || []).map((a) => a.name).join(", ") || "(empty)"}`); break;
+      case "minion": {
+        const r = ev.run;
+        if (!r || minionSeen.get(r.id) === r.status) break;
+        minionSeen.set(r.id, r.status);
+        dlog("MINION", r.status === "running" ? `${r.name} sent off: ${r.task}` : `${r.name}: ${r.status}`, r.status === "running" ? "" : r.report || r.error || "");
+        break;
+      }
+      case "mcp": {
+        const s = (ev.servers || []).map((m) => `${m.name} ${m.status}`).join(", ");
+        if (s && s !== mcpSeen) dlog("MCP", `connected apps: ${s}`);
+        mcpSeen = s;
+        break;
+      }
+      case "index": if (ev.status?.state === "ready") dlog("INDEX", `file index ready: ${(ev.status.total || 0).toLocaleString()} files${ev.status.startedAt ? ` in ${Math.round((ev.status.finishedAt - ev.status.startedAt) / 1000)} s` : ""}`); break;
+      default: break;
+    }
+  }
   function broadcast(ev) {
+    try { logEvent(ev); } catch { /* never in the way */ }
     const line = `data: ${JSON.stringify(ev)}\n\n`;
     for (const res of eventClients) res.write(line);
   }
@@ -237,12 +297,18 @@ export async function startServer({ config, platform, mock = false, port } = {})
       }
       const before = JSON.stringify(config.get("roots")) + config.get("showHidden");
       config.update(patch);
+      dlog("SETTINGS", describePatch(patch));
       if (JSON.stringify(config.get("roots")) + config.get("showHidden") !== before) index.rebuild();
       if ("roots" in patch || "watch" in patch) watcher.restart();
       if ("remote" in patch || "waToken" in patch || "waAppSecret" in patch || "teamsWebhook" in patch) await remote.restart();
+      if ("email" in patch && !config.get("email")?.enabled) outlook.close(); // switched off: let go of Outlook
+      if (patch.voice && "engine" in patch.voice) { // the Chatterbox voice runs only while it's the voice in use (it holds graphics memory)
+        if (patch.voice.engine === "chatterbox" && chatterbox.installed) chatterbox.ensure().catch((e) => dlog("VOICE", `the Chatterbox voice didn't start: ${e.message}`));
+        else if (patch.voice.engine !== "chatterbox") chatterbox.stop();
+      }
       // settings that shape the system prompt or tools start a fresh conversation; the look, the
       // hands, messaging and the small voice switches (continuous, wake word, speak) don't
-      const quiet = ["visuals", "hands", "remote", "waToken", "waAppSecret", "teamsWebhook"];
+      const quiet = ["visuals", "hands", "remote", "waToken", "waAppSecret", "teamsWebhook", "logs"];
       const quietVoice = ["continuous", "wakeWord", "speak", "micId", "rate", "pitch"];
       const reshapes = Object.keys(patch).some((k) => !quiet.includes(k) && !(k === "voice" && Object.keys(patch.voice || {}).every((v) => quietVoice.includes(v))));
       if (reshapes) agent.conv = null; // next message starts fresh
@@ -367,17 +433,25 @@ export async function startServer({ config, platform, mock = false, port } = {})
       const model = v.elevenModel || "eleven_flash_v2_5";
       const body = { text: String(text || "").slice(0, 2500), model_id: model, voice_settings: { stability: 0.45, similarity_boost: 0.8 } };
       // tell the v2.5 models which language it is, so a short Arabic or Japanese line isn't read with the wrong accent
-      // (Tagalog is left to auto-detection: it has no two-letter code the API is sure to accept)
       if (/_v2_5$/.test(model) && ["en", "ar", "fr", "ja", "zh"].includes(lang)) body.language_code = lang;
       const speak = (b) => fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`, {
         method: "POST",
         headers: { "xi-api-key": key, "Content-Type": "application/json", Accept: "audio/mpeg" },
         body: JSON.stringify(b),
+        signal: AbortSignal.timeout(20_000),
       });
-      let r = await speak(body);
-      if (!r.ok && r.status === 400 && body.language_code) { delete body.language_code; r = await speak(body); } // never lose the voice over the hint
+      let r;
+      try {
+        r = await speak(body);
+        if (!r.ok && r.status === 400 && body.language_code) { delete body.language_code; r = await speak(body); } // never lose the voice over the hint
+      } catch (e) {
+        const why = e.name === "TimeoutError" ? "ElevenLabs took too long to answer" : `Couldn't reach ElevenLabs: ${e.cause?.code || e.message}`;
+        dlog("VOICE", `ElevenLabs failed: ${why} - the local voice stood in`);
+        return send(res, 502, { error: why });
+      }
       if (!r.ok) {
         const detail = await r.text().catch(() => "");
+        dlog("VOICE", `ElevenLabs failed: it answered ${r.status} - the local voice stood in`, detail.slice(0, 300));
         return send(res, r.status === 401 ? 401 : 502, { error: r.status === 401 ? "ElevenLabs rejected the key" : `ElevenLabs error ${r.status}: ${detail.slice(0, 200)}` });
       }
       const audio = Buffer.from(await r.arrayBuffer());
@@ -391,6 +465,10 @@ export async function startServer({ config, platform, mock = false, port } = {})
       const file = path.join(dir, "diag.log");
       try { if (fs.statSync(file).size > 1_000_000) fs.renameSync(file, file + ".old"); } catch { /* first entry */ }
       fs.appendFileSync(file, JSON.stringify({ t: new Date().toISOString(), ...entry }) + "\n");
+      if (entry.kind === "voice") dlog("VOICE", entry.reason || `listened ${((entry.ms || 0) / 1000).toFixed(1)} s - ${entry.ok ? "heard you" : "heard nothing usable"}${entry.ended ? ` (${entry.ended})` : ""}`, entry.mic ? `mic: ${entry.mic}${entry.model ? ` - ${entry.model}` : ""}` : "");
+      else if (entry.kind === "instant") dlog("INSTANT", `"${entry.heard || ""}" - done on the spot: ${entry.action}${entry.arg ? ` ${entry.arg}` : ""}`);
+      else if (entry.kind === "error" || entry.kind === "rejection") dlog("UI ERROR", String(entry.message || ""), String(entry.at || ""));
+      else dlog("UI", JSON.stringify(entry).slice(0, 500));
       return send(res, 200, { ok: true });
     }
     // ---- skills
@@ -465,6 +543,27 @@ export async function startServer({ config, platform, mock = false, port } = {})
       } catch (e) { return send(res, 200, { ok: false, error: e.message }); }
       return send(res, 400, { error: "unknown action" });
     }
+    // ---- Claude talking to him (mcp-server.js): on/off, the address, the token and ready-made configs
+    if (route === "/mcp-server" && (isGet || req.method === "POST")) {
+      const b = isGet ? {} : await readJson(req);
+      if (b.action === "enable" || b.action === "disable") {
+        config.update({ mcpServer: { enabled: b.action === "enable" } });
+        dlog("SETTINGS", `Claude over MCP: ${b.action === "enable" ? "switched on" : "switched off"}`);
+      } else if (b.action === "new-token") {
+        config.ensureMcpToken(true);
+        dlog("SETTINGS", "Claude over MCP: new token made (the old one stops working)");
+      } else if (!isGet) return send(res, 400, { error: "unknown action" });
+      const on = !!config.get("mcpServer")?.enabled;
+      const url = `http://127.0.0.1:${actualPort}${ENDPOINT_PATH}`;
+      const token = on ? config.ensureMcpToken() : null;
+      const bridge = path.join(SERVER_DIR, "mcp-stdio.mjs");
+      return send(res, 200, {
+        ok: true, enabled: on, url, token, bridge,
+        // the Claude desktop app starts local MCP servers as programs: the stdio door reads the token itself
+        desktop: { mcpServers: { dennis: { command: "node", args: [bridge] } } },
+        claudeCode: on ? `claude mcp add --transport http dennis ${url} --header "Authorization: Bearer ${token}"` : null,
+      });
+    }
     // ---- meeting notes: the raw transcript is kept in the data folder the moment notes end
     if (route === "/notes" && req.method === "POST") {
       const b = await readJson(req, 5_000_000);
@@ -489,7 +588,14 @@ export async function startServer({ config, platform, mock = false, port } = {})
     if (route === "/brains/models" && req.method === "POST") {
       const b = await readJson(req);
       const p = PROVIDERS[b.provider];
-      if (!p || b.provider === "anthropic") return send(res, 400, { error: "pick OpenAI, Gemini, Ollama or a custom server" });
+      if (b.provider === "anthropic" || b.provider === "auto") {
+        try {
+          const models = [];
+          for await (const m of agent.client().models.list({ limit: 100 })) if (m.lifecycle !== "retired") models.push({ id: m.id, name: m.display_name || m.id });
+          return send(res, 200, { ok: true, models: models.map((m) => m.id), names: Object.fromEntries(models.map((m) => [m.id, m.name])) });
+        } catch (e) { return send(res, 200, { ok: false, error: `Couldn't ask Anthropic for the list: ${e.message}` }); }
+      }
+      if (!p) return send(res, 400, { error: "pick a brain first" });
       const saved = config.get("provider") === b.provider ? brainOf(config) : { ...brainOf({ get: (k) => (k === "provider" ? b.provider : config.get(k)), getSecret: (k) => config.getSecret(k) }) };
       const brain = { ...saved, provider: b.provider, label: p.label, baseUrl: String(b.baseUrl || saved.baseUrl || p.baseUrl || "").replace(/\/+$/, ""), apiKey: b.apiKey || (p.keyName ? config.getSecret(p.keyName) : null) };
       try { return send(res, 200, { ok: true, models: await listModels(brain) }); }
@@ -509,6 +615,15 @@ export async function startServer({ config, platform, mock = false, port } = {})
       } catch (e) { return send(res, 200, { ok: false, error: e.message }); }
       return send(res, 400, { error: "unknown action" });
     }
+    // ---- email through classic Outlook (outlook.js)
+    if (route === "/email" && (isGet || req.method === "POST")) {
+      const b = isGet ? {} : await readJson(req);
+      const base = { enabled: outlook.enabled, available: outlook.available };
+      if (!base.available) return send(res, 200, { ...base, ok: false, error: "Email through Outlook needs Windows with classic Outlook." });
+      if (!base.enabled && b.action !== "test") return send(res, 200, { ...base, ok: true, status: null });
+      try { return send(res, 200, { ...base, ok: true, status: await outlook.call("status", {}, { timeoutMs: 40_000 }) }); }
+      catch (e) { return send(res, 200, { ...base, ok: false, error: e.message }); }
+    }
     // ---- apps you've authorized (apps.js)
     if (route === "/apps" && isGet) return send(res, 200, { apps: apps.list(), canPick: !!platform.pickFile, browser: !!platform.electron });
     if (route === "/apps" && req.method === "POST") {
@@ -520,9 +635,50 @@ export async function startServer({ config, platform, mock = false, port } = {})
           const p = await platform.pickFile?.({ title: "Choose the program, script or shortcut", filters: [{ name: "Programs and shortcuts", extensions: ["exe", "bat", "cmd", "lnk", "url", "appref-ms", "app"] }, { name: "All files", extensions: ["*"] }] });
           return send(res, 200, { ok: !!p, path: p || null });
         }
-        if (b.action === "open") { const r = await apps.open(String(b.name || "")); return send(res, 200, r.error ? { ok: false, error: r.error } : { ok: true, ...r }); }
+        if (b.action === "open") { const r = await apps.open(String(b.name || "")); dlog("APP", `open ${b.name} (from the screen)`, r.error || r.text || ""); return send(res, 200, r.error ? { ok: false, error: r.error } : { ok: true, ...r }); }
         if (b.action === "check") { const a = apps.find(b.name); return send(res, 200, { ok: !!a, up: a?.page ? await apps.isUp(a) : null }); }
       } catch (e) { return send(res, 200, { ok: false, error: e.message }); }
+      return send(res, 400, { error: "unknown action" });
+    }
+    // ---- his own voice (chatterbox.js)
+    if (route === "/voice" && isGet) return send(res, 200, await chatterbox.status());
+    if (route === "/voice" && req.method === "POST") {
+      const b = await readJson(req);
+      try {
+        if (b.action === "setup") return send(res, 200, chatterbox.setup());
+        if (b.action === "cancel") return send(res, 200, { ok: chatterbox.cancel() });
+        if (b.action === "pick-sample") {
+          const p = await platform.pickFile?.({ title: "Choose a voice sample: 10-20 seconds of clear speech", filters: [{ name: "Audio", extensions: ["wav", "mp3", "flac", "ogg"] }] });
+          if (!p) return send(res, 200, { ok: false, cancelled: true });
+          return send(res, 200, { ok: true, sample: chatterbox.useSample(p) });
+        }
+        if (b.action === "default-sample") return send(res, 200, { ok: true, sample: chatterbox.useSample("") });
+      } catch (e) { return send(res, 200, { ok: false, error: e.message }); }
+      return send(res, 400, { error: "unknown action" });
+    }
+    if (route === "/voice/speak" && req.method === "POST") {
+      const { text, lang } = await readJson(req, 20_000);
+      try {
+        const r = await chatterbox.speak(String(text || ""), String(lang || "en"));
+        return send(res, 200, r.audio, { "Content-Type": "audio/wav", "X-Took": String(r.took), "X-Model": r.model });
+      } catch (e) {
+        dlog("VOICE", `Chatterbox failed: ${e.message} - another voice stood in`);
+        return send(res, 503, { error: e.message });
+      }
+    }
+    // ---- the free brain (ollama.js)
+    if (route === "/ollama" && isGet) return send(res, 200, await ollama.status());
+    if (route === "/ollama" && req.method === "POST") {
+      const b = await readJson(req);
+      if (b.action === "setup") return send(res, 200, ollama.setup({ model: b.model ? String(b.model).trim() : undefined }));
+      if (b.action === "cancel") return send(res, 200, { ok: ollama.cancel() });
+      return send(res, 400, { error: "unknown action" });
+    }
+    // ---- his daily log (log.js)
+    if (route === "/logs" && isGet) return send(res, 200, { dir: LOG_DIR, days: listDays().slice(0, 400), today: q.get("today") ? readLog({ day: "today", limit: 200 }) : undefined });
+    if (route === "/logs" && req.method === "POST") {
+      const b = await readJson(req);
+      if (b.action === "reveal") { fs.mkdirSync(LOG_DIR, { recursive: true }); await platform.openPath?.(LOG_DIR); return send(res, 200, { ok: true }); }
       return send(res, 400, { error: "unknown action" });
     }
     if (route === "/pick-folder" && req.method === "POST") {
@@ -557,6 +713,8 @@ export async function startServer({ config, platform, mock = false, port } = {})
         if (!safeEqual(readCookie(req, COOKIE), token)) return send(res, 401, { error: "locked" });
         return await api(req, res, url);
       }
+      // Claude over MCP: its own bearer token, checked there (404 while switched off)
+      if (url.pathname === ENDPOINT_PATH) return await claude.handle(req, res);
       return serveStatic(req, res, url.pathname);
     } catch (e) {
       if (res.headersSent) { try { res.end(); } catch { /* gone */ } return; }
@@ -583,6 +741,10 @@ export async function startServer({ config, platform, mock = false, port } = {})
     }
   }
   const base = `http://127.0.0.1:${actualPort}`;
+  // where he's listening, for mcp-stdio.mjs (the port walks up when 47800 is taken)
+  const RUN_FILE = path.join(DATA_DIR, "run.json");
+  try { fs.writeFileSync(RUN_FILE, JSON.stringify({ port: actualPort, pid: process.pid, startedAt: new Date().toISOString() })); } catch { /* the stdio door falls back to the configured port */ }
+  { const b = agent.brain(); dlog("START", `D.E.N.N.I.S. ${VERSION} is up on port ${actualPort}${platform.electron ? " (desktop app)" : ""} - brain: ${b.label}${b.model ? ` (${b.model})` : ""} - ${roots().length} mapped folders`); }
   return {
     port: actualPort,
     url: base,
@@ -590,11 +752,17 @@ export async function startServer({ config, platform, mock = false, port } = {})
     index,
     agent,
     close: async () => {
+      dlog("STOP", "shutting down");
       for (const r of agent.minions.running()) agent.minions.recall(r.id);
+      claude.close();
+      try { if (JSON.parse(fs.readFileSync(RUN_FILE, "utf8")).pid === process.pid) fs.rmSync(RUN_FILE); } catch { /* already gone */ }
       agent.reminders?.close();
       watcher.close();
       remote.close();
       apps.close();
+      outlook.close();
+      ollama.cancel();
+      chatterbox.close();
       await agent.mcp.close().catch(() => {}); // stops local MCP server processes
       await new Promise((r) => { for (const c of eventClients) c.end(); server.close(() => r()); });
     },

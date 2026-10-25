@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { cleanApps } from "./apps.js";
+import { brainOf } from "./brains.js";
 
 export const DATA_DIR = process.env.DENNIS_HOME || path.join(os.homedir(), ".dennis");
 const CONFIG_PATH = path.join(DATA_DIR, "config.json");
@@ -17,7 +18,7 @@ const DEFAULTS = {
   address: "", // how D.E.N.N.I.S. addresses you ("sir", "boss", ...); empty = by name
   personality: "", // your own notes on his personality, added to the system prompt
   model: DEFAULT_MODEL, // the Claude model
-  provider: "anthropic", // the brain: anthropic | openai | gemini | ollama | custom (see brains.js)
+  provider: "auto", // the brain: auto (Claude with a key, else free Ollama) | anthropic | openai | gemini | ollama | custom (brains.js)
   brains: { openai: { model: "" }, gemini: { model: "" }, ollama: { model: "", baseUrl: "http://127.0.0.1:11434/v1" }, custom: { model: "", baseUrl: "" } },
   effort: "low", // low keeps spoken replies quick; raise for heavier file work
   webSearch: true,
@@ -27,7 +28,7 @@ const DEFAULTS = {
   voice: { speak: true, voiceName: "", rate: 0.96, pitch: 0.85, stt: "whisper", sttModel: "Xenova/whisper-base.en", micId: "", wakeWord: true,
     engine: "kokoro", kokoroVoice: "bm_daniel", elevenVoice: "onwK4e9ZLuTAKqWW03F9", elevenModel: "eleven_flash_v2_5",
     language: "en", // "en" (English-only models) | "auto" (detect among `languages`) | one ISO code
-    languages: ["en", "ar", "tl", "fr", "ja", "zh"] },
+    languages: ["en", "ar", "fr", "ja", "zh"] },
   hands: { enabled: true, palmToTalk: true, showCamera: true, cameraId: "", mirror: true, stageFlip: false, feel: "normal", camView: "stage" }, // feel: normal | calm; camView: stage | pip | off; stageFlip: full-stage camera picture renders upside down on this machine
   visuals: { bloom: true, autoRotate: true, theme: "reactor" }, // theme: reactor | spiral | neural | grid (ui/js/themes.js)
   // messaging (remote.js): WhatsApp and Teams; their tokens are secrets, stored apart (setSecret)
@@ -37,8 +38,10 @@ const DEFAULTS = {
     forward: { reminders: true, minions: true, watcher: true, approvals: true, awayOnly: true, awayMinutes: 10, via: "whatsapp" },
   },
   apps: [], // apps you've authorized him to open (apps.js): [{ name, run, page, ready, where }]
+  email: { enabled: false }, // read and draft email through classic Outlook on this PC (outlook.js)
   skillsDisabled: [], // ids of installed skills (~/.dennis/skills) that are switched off
   mcpServers: {}, // MCP servers, same shape as Claude Desktop's: { name: { command, args, env } | { url, headers } }
+  mcpServer: { enabled: false }, // the other way round: Claude talks to him over MCP (mcp-server.js); its bearer token is `mcpToken`
   docSkills: { enabled: true, skills: ["docx", "pptx", "xlsx", "pdf"] }, // Anthropic's document skills, in the cloud sandbox
   minions: [ // worker agents D.E.N.N.I.S. can deploy (toolsets: files, write, web, skills, docs, mcp)
     { name: "Scout", role: "A researcher. Digs up facts on the web and in the files, cross-checks them, and reports back with sources.", tools: ["web", "files", "skills"], effort: "medium" },
@@ -48,6 +51,7 @@ const DEFAULTS = {
   briefMinions: true, // when a minion finishes, D.E.N.N.I.S. tells you about it straight away
   location: null, // { query, name, lat, lon } for the weather in the daily briefing (set by "Your city")
   briefOnBoot: false, // the daily briefing at the first start of each day
+  logs: { enabled: true, keepDays: 90 }, // the daily log (log.js); keepDays 0 = keep every day
   watch: { enabled: true, minFiles: 5, quiet: { from: "22:00", to: "07:00" }, dnd: false }, // the folder watcher's notices
   port: 47800,
 };
@@ -124,7 +128,7 @@ export class Config {
   /** Apply a partial update from the settings screen. Only known keys are accepted. */
   update(patch = {}) {
     const allowed = ["userName", "address", "personality", "model", "effort", "webSearch", "permissionMode", "roots", "showHidden", "voice", "hands", "visuals",
-      "skillsDisabled", "mcpServers", "docSkills", "minions", "briefMinions", "provider", "brains", "location", "briefOnBoot", "watch", "remote", "apps"];
+      "skillsDisabled", "mcpServers", "mcpServer", "docSkills", "minions", "briefMinions", "provider", "brains", "location", "briefOnBoot", "watch", "remote", "apps", "logs", "email"];
     for (const k of allowed) {
       if (!(k in patch)) continue;
       if (k === "roots") {
@@ -139,13 +143,17 @@ export class Config {
       } else if (k === "mcpServers") {
         // validated by mcp.js normalizeServers before it gets here; replaced whole so servers can be removed
         if (patch.mcpServers && typeof patch.mcpServers === "object" && !Array.isArray(patch.mcpServers)) this.data.mcpServers = patch.mcpServers;
+      } else if (k === "mcpServer") {
+        const m = patch.mcpServer && typeof patch.mcpServer === "object" ? patch.mcpServer : {};
+        this.data.mcpServer = { ...this.data.mcpServer, ...("enabled" in m ? { enabled: !!m.enabled } : {}) };
+        if (this.data.mcpServer.enabled) this.ensureMcpToken();
       } else if (k === "minions") {
         // validated by minions.js cleanDefinition before it gets here
         if (Array.isArray(patch.minions)) this.data.minions = patch.minions.slice(0, 50);
       } else if (k === "location") {
         this.data.location = patch.location && typeof patch.location === "object" ? patch.location : null; // geocoded by the server
       } else if (k === "provider") {
-        if (["anthropic", "openai", "gemini", "ollama", "custom"].includes(patch.provider)) this.data.provider = patch.provider;
+        if (["auto", "anthropic", "openai", "gemini", "deepseek", "ollama", "custom"].includes(patch.provider)) this.data.provider = patch.provider;
       } else if (k === "remote") {
         const r = patch.remote && typeof patch.remote === "object" ? structuredClone(patch.remote) : {};
         if (r.whatsapp) {
@@ -159,6 +167,9 @@ export class Config {
         if (r.forward && "via" in r.forward && !["whatsapp", "teams", "both"].includes(r.forward.via)) delete r.forward.via;
         if (r.teams && "inboxFolder" in r.teams) r.teams.inboxFolder = String(r.teams.inboxFolder || "").trim().replace(/^"(.*)"$/, "$1");
         this.data.remote = deepMerge(this.data.remote, r);
+      } else if (k === "logs") {
+        const l = patch.logs && typeof patch.logs === "object" ? patch.logs : {};
+        this.data.logs = { ...this.data.logs, ...("enabled" in l ? { enabled: !!l.enabled } : {}), ...("keepDays" in l ? { keepDays: Math.max(0, Math.min(3650, Math.round(+l.keepDays) || 0)) } : {}) };
       } else if (k === "apps") {
         this.data.apps = cleanApps(patch.apps); // replaced whole, so apps can be removed
       } else if (k === "visuals") {
@@ -177,12 +188,21 @@ export class Config {
     }
     if ("apiKey" in patch) this.setApiKey(patch.apiKey);
     if ("elevenKey" in patch) this.setSecret("elevenKey", patch.elevenKey);
-    for (const k of ["openaiKey", "geminiKey", "customKey"]) if (k in patch) this.setSecret(k, patch[k]); // other brains' keys
+    for (const k of ["openaiKey", "geminiKey", "deepseekKey", "customKey"]) if (k in patch) this.setSecret(k, patch[k]); // other brains' keys
     for (const k of ["waToken", "waAppSecret", "teamsWebhook"]) if (k in patch) this.setSecret(k, patch[k]); // messaging (remote.js)
     this.save();
   }
 
   setApiKey(key) { this.setSecret("apiKey", key); }
+
+  /**
+   * The bearer token for his MCP endpoint (mcp-server.js), made on first use. Kept as plain text, like the
+   * window's own `token`, so mcp-stdio.mjs (a separate program, without the keychain) can read it.
+   */
+  ensureMcpToken(renew = false) {
+    if (renew || !this.data.mcpToken) { this.data.mcpToken = `dennis_mcp_${crypto.randomBytes(24).toString("hex")}`; this.save(); }
+    return this.data.mcpToken;
+  }
 
   /** Secrets are encrypted with the OS keychain in the desktop app (plain text only as a fallback). */
   setSecret(name, value) {
@@ -190,6 +210,12 @@ export class Config {
     if (!value) { delete this.data[name]; return; }
     if (this.secrets?.canEncrypt()) this.data[name] = { scheme: "os", value: this.secrets.encrypt(value) };
     else this.data[name] = { scheme: "plain", value };
+  }
+
+  /** Saved keys this computer can't unlock (encrypted under another profile's key): paste them again. */
+  lockedSecrets() {
+    return ["apiKey", "elevenKey", "openaiKey", "geminiKey", "deepseekKey", "customKey", "waToken", "waAppSecret", "teamsWebhook"]
+      .filter((k) => this.data[k]?.scheme === "os" && this.getSecret(k) === undefined);
   }
 
   getSecret(name) {
@@ -217,8 +243,9 @@ export class Config {
 
   /** What the UI is allowed to see: everything except secrets. */
   publicView() {
-    const { token, apiKey, elevenKey, openaiKey, geminiKey, customKey, waToken, waAppSecret, teamsWebhook, teamsRefresh, ...rest } = this.data;
-    return { ...rest, hasApiKey: this.hasCredentials(), hasElevenKey: !!this.getSecret("elevenKey"),
-      brainKeys: { openai: !!this.getSecret("openaiKey"), gemini: !!this.getSecret("geminiKey"), custom: !!this.getSecret("customKey") }, keyStorage: apiKey?.scheme || (process.env.ANTHROPIC_API_KEY ? "env" : null), dataDir: DATA_DIR };
+    const { token, mcpToken, apiKey, elevenKey, openaiKey, geminiKey, deepseekKey, customKey, waToken, waAppSecret, teamsWebhook, teamsRefresh, ...rest } = this.data;
+    const b = brainOf(this); // the brain in use right now (for "auto", the one it picked)
+    return { ...rest, hasApiKey: this.hasCredentials(), hasElevenKey: !!this.getSecret("elevenKey"), lockedKeys: this.lockedSecrets(), brainNow: { provider: b.provider, label: b.label, model: b.model, auto: !!b.auto },
+      brainKeys: { openai: !!this.getSecret("openaiKey"), gemini: !!this.getSecret("geminiKey"), deepseek: !!this.getSecret("deepseekKey"), custom: !!this.getSecret("customKey") }, keyStorage: apiKey?.scheme || (process.env.ANTHROPIC_API_KEY ? "env" : null), dataDir: DATA_DIR };
   }
 }

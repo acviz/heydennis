@@ -141,17 +141,27 @@
           <small>Out of the box: Jarvis meets Sean Connery - dry wit, a little sarcasm, very sophisticated. Notes here take priority.</small></label>
         <label>Brain
           <select name="provider">
+            <option value="auto">Automatic - Claude or free Ollama</option>
             <option value="anthropic">Claude (Anthropic) - recommended</option>
             <option value="openai">OpenAI (GPT)</option>
             <option value="gemini">Google Gemini</option>
-            <option value="ollama">Ollama (local, open source)</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="ollama">Ollama - free, runs on this computer</option>
             <option value="custom">Other OpenAI-compatible server</option>
           </select></label>
         <label>Model <span class="lbl-act"><button type="button" id="brain-list" hidden>LIST MODELS</button></span>
           <input name="model" list="brain-models" placeholder="claude-opus-5-5"><datalist id="brain-models"></datalist></label>
+        <label class="claude-model" hidden>Claude model <span class="lbl-act"><button type="button" id="claude-list">LIST MODELS</button></span>
+          <select name="claudeModel"></select></label>
         <label class="span2 brain-url" hidden>Server address<input name="brainUrl" placeholder="http://127.0.0.1:11434/v1"></label>
         <label class="span2 brain-key" hidden>API key for this brain <span id="brain-key-state"></span><input name="brainKey" type="password" placeholder="leave blank to keep the current key"></label>
         <small class="span2" id="brain-note" hidden></small>
+        <div class="span2 ollama-box" hidden>
+          <div class="ob-row"><span class="dot" id="ollama-dot"></span><span id="ollama-state">Checking Ollama...</span><span class="sp"></span>
+            <button type="button" id="ollama-setup">SET UP OLLAMA</button><button type="button" id="ollama-cancel" hidden>CANCEL</button></div>
+          <div class="ob-bar" hidden><i></i></div>
+          <small id="ollama-note"></small>
+        </div>
         <label class="span2 claude-key">Claude API key <span id="key-state"></span>
           <input name="apiKey" type="password" placeholder="sk-ant-...  (leave blank to keep the current key)">
           <small>Get one at console.anthropic.com. Stored on this computer only<span id="key-storage"></span>.</small></label>
@@ -167,7 +177,14 @@
         </div>
         <label class="check"><input type="checkbox" name="speak"> Speak replies aloud</label>
         <label>Voice engine
-          <select name="engine"><option value="kokoro">Natural British - on this PC (free)</option><option value="elevenlabs">ElevenLabs - most human (needs a key)</option><option value="system">System voice (robotic)</option></select></label>
+          <select name="engine"><option value="chatterbox">Chatterbox - his own voice, on this PC, every language (free)</option><option value="kokoro">Natural British - on this PC (free)</option><option value="elevenlabs">ElevenLabs - most human (needs a key)</option><option value="system">System voice (robotic)</option></select></label>
+        <div class="span2 ollama-box cb-box" hidden>
+          <div class="ob-row"><span class="dot" id="cb-dot"></span><span id="cb-state">Checking the Chatterbox voice...</span><span class="sp"></span>
+            <button type="button" id="cb-setup">SET UP CHATTERBOX</button><button type="button" id="cb-cancel" hidden>CANCEL</button></div>
+          <div class="ob-bar" hidden><i></i></div>
+          <small id="cb-note"></small>
+          <div class="ob-row"><small id="cb-sample"></small><span class="sp"></span><button type="button" id="cb-pick">USE MY OWN SAMPLE...</button><button type="button" id="cb-daniel" hidden>BACK TO DANIEL</button></div>
+        </div>
         <label>Natural voice<select name="kokoroVoice"><option value="bm_daniel">Daniel</option><option value="bm_george">George</option><option value="bm_fable">Fable</option><option value="bm_lewis">Lewis</option></select></label>
         <label>ElevenLabs key <span id="eleven-state"></span><input name="elevenKey" type="password" placeholder="optional - leave blank to keep the current key"></label>
         <label>ElevenLabs voice ID<input name="elevenVoice" placeholder="onwK4e9ZLuTAKqWW03F9 (Daniel)"></label>
@@ -175,12 +192,12 @@
         <label>Languages you speak
           <select name="language">
             <option value="en">English only</option>
-            <option value="auto">Auto: English, Arabic, Tagalog, French, Japanese, Chinese</option>
-            <option value="ar">Arabic</option><option value="tl">Tagalog</option><option value="fr">French</option><option value="ja">Japanese</option><option value="zh">Chinese</option>
+            <option value="auto">Auto: English, Arabic, French, Japanese, Chinese</option>
+            <option value="ar">Arabic</option><option value="fr">French</option><option value="ja">Japanese</option><option value="zh">Chinese</option>
           </select>
           <small>He replies in the language you use. Beyond English, speaking needs the ElevenLabs voice (or a system voice for that language).</small></label>
         <label>Speech recognition
-          <select name="sttModel"><option value="Xenova/whisper-tiny.en">Whisper tiny (fastest, ~40 MB)</option><option value="Xenova/whisper-base.en">Whisper base (balanced, ~80 MB)</option><option value="Xenova/whisper-small.en">Whisper small (most accurate, ~250 MB; best for Arabic, Japanese, Chinese, Tagalog)</option></select>
+          <select name="sttModel"><option value="Xenova/whisper-tiny.en">Whisper tiny (fastest, ~40 MB)</option><option value="Xenova/whisper-base.en">Whisper base (balanced, ~80 MB)</option><option value="Xenova/whisper-small.en">Whisper small (most accurate, ~250 MB; best for Arabic, Japanese, Chinese)</option></select>
           <small>With more than English, the multilingual version of the same model is used.</small></label>
         <label>Microphone<select name="micId"><option value="">system default</option></select></label>
         <label class="check"><input type="checkbox" name="handsEnabled"> Hand tracking (webcam)</label>
@@ -199,10 +216,13 @@
         <label class="check"><input type="checkbox" name="briefOnBoot"> Brief me at the first start each day</label>
         <label class="check"><input type="checkbox" name="watchOn"> Watch my folders: mention new batches of files and low disk space</label>
         <label>Quiet hours (no notices)<span class="pair"><input name="quietFrom" type="time" value="22:00"> to <input name="quietTo" type="time" value="07:00"></span></label>
+        <label class="check"><input type="checkbox" name="logsOn"> Keep a daily log of everything I do (stays on this computer; keys and passwords are never written)</label>
+        <label>Keep each day's log for<select name="logsKeep"><option value="30">30 days</option><option value="90">90 days</option><option value="365">a year</option><option value="0">forever</option></select></label>
       </div>
       <div class="row end">
         <button type="button" id="open-caps">CAPABILITIES</button>
         <button type="button" id="open-memory">MEMORY FILE</button>
+        <button type="button" id="open-logs">DAILY LOGS</button>
         <button type="button" id="settings-cancel">CANCEL</button>
         <button type="submit" class="yes">SAVE</button>
       </div>
@@ -264,6 +284,19 @@
         <textarea id="mcp-json" rows="10" spellcheck="false" placeholder='{ "mcpServers": { "blender": { "command": "uvx", "args": ["blender-mcp"] } } }'></textarea>
         <div class="row"><button type="button" id="mcp-import">IMPORT FROM CLAUDE DESKTOP</button><button type="button" id="mcp-reconnect">RECONNECT</button><button type="button" id="mcp-save" class="yes">SAVE &amp; CONNECT</button></div>
         <small>Local servers run as programs on this computer: only add ones you trust. Keys and tokens in this config are stored in your data folder as plain text, as in Claude Desktop. Server logs go to the logs folder there.</small>
+
+        <div class="msgcard" id="claude-card">
+          <h4><i class="dot" id="claude-dot"></i>LET CLAUDE TALK TO ME<small id="claude-status"></small></h4>
+          <div class="grid"><label class="check span2"><input type="checkbox" id="claude-on"> Let Claude (the Claude app, Claude Code) talk to D.E.N.N.I.S. over MCP, on this computer</label></div>
+          <p class="hint">Claude's messages join the conversation, marked as Claude's, and his replies go back to it. Anything that changes your files, sends something or opens a program still waits for your yes - here, or on your phone while you're away - even in auto mode; Claude can't approve it. Only this computer can reach him, and only with the token.</p>
+          <div id="claude-details" hidden>
+            <div class="kv"><span>ADDRESS</span><code id="claude-url"></code><button type="button" id="claude-copy-url">COPY</button></div>
+            <div class="kv"><span>TOKEN</span><code id="claude-token"></code><button type="button" id="claude-show">SHOW</button><button type="button" id="claude-copy-token">COPY</button></div>
+            <div class="kv"><span>CLAUDE APP</span><code>Add to claude_desktop_config.json</code><button type="button" id="claude-copy-desktop">COPY CONFIG</button></div>
+            <div class="kv"><span>CLAUDE CODE</span><code>claude mcp add ...</code><button type="button" id="claude-copy-code">COPY COMMAND</button></div>
+            <div class="row"><button type="button" id="claude-new-token">NEW TOKEN</button></div>
+          </div>
+        </div>
       </section>
 
       <section data-pane="docs" hidden>
@@ -279,6 +312,13 @@
 
       <section data-pane="msg" hidden>
         <p class="hint">Message D.E.N.N.I.S. from your phone and he answers there: same conversation, same tools, same rules. Only you get through. Changes to your files still need your yes (he asks in the chat), and "stop" cancels what he's doing. He answers while this computer is on and he's running. Step-by-step setup: README, under Messaging.</p>
+
+        <div class="msgcard">
+          <h4><i class="dot" id="mail-dot"></i>EMAIL &middot; OUTLOOK<small id="mail-status"></small></h4>
+          <div class="grid"><label class="check span2"><input type="checkbox" id="mail-on"> Let D.E.N.N.I.S. read my email and write drafts (classic Outlook on this computer)</label></div>
+          <p class="hint">Classic Outlook has to be installed and signed in to your mailbox here, but its window doesn't need to stay open: he starts it in the background when he needs it. The new Outlook can't be connected this way. He never sends on his own - replies go to your Drafts and open in Outlook, and he sends one only when you tell him to and confirm. Emails he reads go to Claude to be understood, as your files do.</p>
+          <div class="row"><button type="button" id="mail-test">CHECK OUTLOOK</button></div>
+        </div>
 
         <div class="msgcard">
           <h4><i class="dot" id="wa-dot"></i>WHATSAPP<small id="wa-status"></small></h4>

@@ -15,7 +15,10 @@ export const PROVIDERS = {
   anthropic: { label: "Claude (Anthropic)", keyName: "apiKey" },
   openai: { label: "OpenAI (GPT)", baseUrl: "https://api.openai.com/v1", keyName: "openaiKey", usage: true },
   gemini: { label: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", keyName: "geminiKey", strictSchema: true },
-  ollama: { label: "Ollama (local, open source)", baseUrl: "http://127.0.0.1:11434/v1", keyName: null },
+  // DeepSeek (api-docs.deepseek.com): thinking is on by default, and with tools it would have to be sent back on
+  // every later request (a 400 otherwise) - so it's off: quicker spoken replies, and the history stays simple
+  deepseek: { label: "DeepSeek", baseUrl: "https://api.deepseek.com", keyName: "deepseekKey", usage: true, defaultModel: "deepseek-flash", extra: { thinking: { type: "disabled" } } },
+  ollama: { label: "Ollama (free, on this computer)", baseUrl: "http://127.0.0.1:11434/v1", keyName: null, usage: true },
   custom: { label: "Other OpenAI-compatible", baseUrl: "", keyName: "customKey", usage: true },
 };
 
@@ -23,19 +26,75 @@ export class BrainError extends Error {
   constructor(status, message, provider) { super(message); this.status = status; this.provider = provider; }
 }
 
-/** The active brain: { provider, label, model, baseUrl, apiKey }. */
+/**
+ * "auto" (the default for a new install): Claude when there's a key for it, else another paid brain
+ * that has a key and a model, else Ollama - free, on this computer.
+ */
+export function autoProvider(config) {
+  const claude = typeof config.hasCredentials === "function" ? config.hasCredentials() : !!config.getSecret?.("apiKey");
+  if (claude) return "anthropic";
+  for (const p of ["openai", "gemini", "deepseek", "custom"]) {
+    const set = config.get("brains")?.[p] || {};
+    if (config.getSecret?.(PROVIDERS[p].keyName) && String(set.model || PROVIDERS[p].defaultModel || "").trim() && (p !== "custom" || String(set.baseUrl || "").trim())) return p;
+  }
+  return "ollama";
+}
+
+/** The active brain: { provider, label, model, baseUrl, apiKey, auto }. */
 export function brainOf(config) {
-  const provider = PROVIDERS[config.get("provider")] ? config.get("provider") : "anthropic";
-  if (provider === "anthropic") return { provider, label: PROVIDERS.anthropic.label, model: config.get("model") || "claude-opus-5-5" };
+  const chosen = config.get("provider");
+  const auto = chosen === "auto";
+  const provider = auto ? autoProvider(config) : PROVIDERS[chosen] ? chosen : "anthropic";
+  if (provider === "anthropic") return { provider, label: PROVIDERS.anthropic.label, model: config.get("model") || "claude-opus-5-5", auto };
   const p = PROVIDERS[provider];
   const set = config.get("brains")?.[provider] || {};
   return {
     provider,
     label: p.label,
-    model: String(set.model || "").trim(),
+    model: String(set.model || p.defaultModel || "").trim(),
     baseUrl: String(set.baseUrl || p.baseUrl || "").trim().replace(/\/+$/, ""),
     apiKey: p.keyName ? config.getSecret(p.keyName) : null,
+    auto,
   };
+}
+
+/**
+ * Some open models think out loud between <think> tags (Qwen, DeepSeek): that's not for speaking.
+ * Fed the stream piece by piece, it passes on only what's outside the tags, even when a tag is
+ * split across pieces.
+ */
+export class ThinkFilter {
+  constructor() { this.on = false; this.carry = ""; this.started = false; }
+  push(chunk) {
+    let s = this.carry + String(chunk || ""), out = "";
+    this.carry = "";
+    while (s) {
+      if (this.on) {
+        const e = s.indexOf("</think>");
+        if (e < 0) { this.carry = s.slice(-7); return this.tidy(out); }
+        s = s.slice(e + 8);
+        this.on = false;
+      } else {
+        const b = s.indexOf("<think>");
+        if (b < 0) {
+          let k = Math.min(6, s.length);
+          while (k > 0 && !"<think>".startsWith(s.slice(-k))) k--; // a tag that may be starting
+          out += s.slice(0, s.length - k);
+          this.carry = s.slice(s.length - k);
+          return this.tidy(out);
+        }
+        out += s.slice(0, b);
+        s = s.slice(b + 7);
+        this.on = true;
+      }
+    }
+    return this.tidy(out);
+  }
+  end() { const rest = this.on ? "" : this.carry; this.carry = ""; return this.tidy(rest); }
+  tidy(out) { // no blank lines before the first words
+    if (!this.started) { out = out.replace(/^\s+/, ""); if (out) this.started = true; }
+    return out;
+  }
 }
 
 /** Is there enough to talk to this brain? Returns null when ready, else what's missing. */
@@ -153,7 +212,11 @@ export async function callCompat({ brain, conv, signal, onEvent }) {
   };
   const tools = toCompatTools(conv.apiTools, brain);
   if (tools.length) { body.tools = tools; body.tool_choice = "auto"; }
+  // Qwen 3 on Ollama: answer straight away (its silent thinking slows every spoken reply). Ollama ignores
+  // Qwen's own /no_think switch but honours reasoning_effort "none" (measured: 141 tokens down to 26 for a tool call)
+  if (brain.provider === "ollama" && /qwen3/i.test(brain.model)) body.reasoning_effort = "none";
   if (PROVIDERS[brain.provider].usage) body.stream_options = { include_usage: true };
+  Object.assign(body, PROVIDERS[brain.provider].extra || {}); // a provider's own switches (DeepSeek: thinking off)
 
   let res;
   for (let attempt = 0; ; attempt++) {
@@ -172,6 +235,13 @@ export async function callCompat({ brain, conv, signal, onEvent }) {
 
   const emit = (ev) => { try { onEvent?.(ev); } catch { /* UI's problem */ } };
   let text = "", textOpen = false, finish = null, usage = null;
+  const think = new ThinkFilter();
+  const say = (piece) => {
+    if (!piece) return;
+    if (!textOpen) { textOpen = true; emit({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }); }
+    text += piece;
+    emit({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: piece } });
+  };
   const calls = new Map(); // stream index -> { id, name, args }
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -181,11 +251,7 @@ export async function callCompat({ brain, conv, signal, onEvent }) {
     const ch = j.choices?.[0];
     if (!ch) return;
     const d = ch.delta || {};
-    if (d.content) {
-      if (!textOpen) { textOpen = true; emit({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }); }
-      text += d.content;
-      emit({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: d.content } });
-    }
+    if (d.content) say(think.push(d.content));
     for (const tc of d.tool_calls || []) {
       const k = tc.index ?? calls.size;
       let c = calls.get(k);
@@ -210,6 +276,7 @@ export async function callCompat({ brain, conv, signal, onEvent }) {
       try { handle(JSON.parse(data)); } catch { /* a keep-alive or partial line */ }
     }
   }
+  say(think.end());
   if (textOpen) emit({ type: "content_block_stop", index: 0 });
 
   const content = [];

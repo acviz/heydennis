@@ -38,6 +38,8 @@ export const api = {
   skillsDo: (body) => req("POST", "/api/skills", body),
   mcp: () => req("GET", "/api/mcp"),
   mcpDo: (body) => req("POST", "/api/mcp", body),
+  mcpServer: () => req("GET", "/api/mcp-server"),
+  mcpServerDo: (body) => req("POST", "/api/mcp-server", body),
   minions: () => req("GET", "/api/minions"),
   minionsDo: (body) => req("POST", "/api/minions", body),
   undo: (count = 1) => req("POST", "/api/undo", { count }),
@@ -46,9 +48,17 @@ export const api = {
   remote: () => req("GET", "/api/remote"),
   remoteDo: (body) => req("POST", "/api/remote", body),
   presence: () => req("POST", "/api/presence", {}),
+  logs: () => req("GET", "/api/logs"),
+  ollama: () => req("GET", "/api/ollama"),
+  voiceStatus: () => req("GET", "/api/voice"),
+  voiceDo: (body) => req("POST", "/api/voice", body),
+  ollamaDo: (body) => req("POST", "/api/ollama", body),
+  logsDo: (body) => req("POST", "/api/logs", body),
   saveDiagram: (title, svg, png) => req("POST", "/api/diagram-save", { title, svg, png }),
   // apps you've authorized (Capabilities > YOUR APPS)
   apps: () => req("GET", "/api/apps"),
+  email: () => req("GET", "/api/email"),
+  emailDo: (body) => req("POST", "/api/email", body),
   appsDo: (body) => req("POST", "/api/apps", body),
 
   /** Server-sent events for background status (index progress). */
